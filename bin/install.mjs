@@ -95,11 +95,47 @@ function copyDir(src, dest, root = src) {
   fs.chmodSync(dest, stat.mode);
 }
 
+const cookieFiles = ["ozon_cookies.json", "wb_cookies.json"];
+
+function readCookieSnapshot(root) {
+  const dataDir = path.join(root, "data");
+  const snapshot = new Map();
+  for (const name of cookieFiles) {
+    const file = path.join(dataDir, name);
+    if (fs.existsSync(file)) {
+      snapshot.set(name, fs.readFileSync(file));
+    }
+  }
+  return snapshot;
+}
+
+function restoreCookieSnapshot(root, snapshot) {
+  if (!snapshot.size) return;
+  const dataDir = path.join(root, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  for (const [name, bytes] of snapshot.entries()) {
+    fs.writeFileSync(path.join(dataDir, name), bytes);
+  }
+}
+
+function syncCookieFiles(srcRoot, destRoot) {
+  const srcData = path.join(srcRoot, "data");
+  const destData = path.join(destRoot, "data");
+  fs.mkdirSync(destData, { recursive: true });
+  for (const name of cookieFiles) {
+    const src = path.join(srcData, name);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(destData, name));
+    }
+  }
+}
+
 function copyBundle(dest) {
   if (samePath(packageRoot, dest)) {
     log(`source already at ${dest}`);
     return;
   }
+  const cookies = readCookieSnapshot(dest);
   if (!fs.existsSync(path.join(dest, ".git"))) {
     fs.rmSync(dest, { recursive: true, force: true });
   } else {
@@ -107,6 +143,7 @@ function copyBundle(dest) {
   }
   copyDir(packageRoot, dest);
   fs.mkdirSync(path.join(dest, "data"), { recursive: true });
+  restoreCookieSnapshot(dest, cookies);
 }
 
 function findPython() {
@@ -251,6 +288,7 @@ function main() {
   log(`installing ${PLUGIN_NAME}@${version}`);
   copyBundle(sourceRoot);
   copyBundle(cacheRoot);
+  syncCookieFiles(sourceRoot, cacheRoot);
   const pythonPath = ensureVenv(sourceRoot);
   writeMcp(cacheRoot, pythonPath);
   updateMarketplaceJson();

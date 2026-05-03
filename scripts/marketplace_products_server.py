@@ -8,7 +8,9 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse, urlunparse
@@ -76,6 +78,12 @@ _wb_lock = asyncio.Lock()
 
 def _json_text(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
+
+
+@contextlib.contextmanager
+def _vendor_stdout_to_stderr():
+    with contextlib.redirect_stdout(sys.stderr):
+        yield
 
 
 def _ok_source(source: str) -> str:
@@ -295,7 +303,8 @@ async def _ensure_ozon(*, force_browser: bool = False) -> dict[str, str]:
             return _oz_cookies
         if force_browser:
             await _run_browser_login("ozon")
-        saved = ozon.load_cookies()
+        with _vendor_stdout_to_stderr():
+            saved = ozon.load_cookies()
         if not saved:
             raise RuntimeError(
                 "Ozon cookies are missing. Run `npx github:kirillshsh/marketplaces` "
@@ -312,7 +321,8 @@ async def _ensure_wb(*, force_browser: bool = False) -> dict[str, str]:
             return _wb_cookies
         if force_browser:
             await _run_browser_login("wb")
-        saved = wb.load_cookies()
+        with _vendor_stdout_to_stderr():
+            saved = wb.load_cookies()
         if not saved:
             raise RuntimeError(
                 "Wildberries cookies are missing. Run `npx github:kirillshsh/marketplaces` "
@@ -338,10 +348,101 @@ async def _run_browser_login(source: str) -> None:
         str(cache_data),
         "--profile",
         str(profile),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    code = await proc.wait()
+    stdout, stderr = await proc.communicate()
+    for chunk in (stdout, stderr):
+        if chunk:
+            sys.stderr.write(chunk.decode(errors="replace"))
+            sys.stderr.flush()
+    code = proc.returncode
     if code != 0:
         raise RuntimeError(f"Browser login failed for {source} with exit code {code}.")
+
+
+def _browser_candidates() -> list[str]:
+    candidates = [
+        os.environ.get("MARKETPLACES_BROWSER"),
+        os.environ.get("MARKETPLACE_PRODUCTS_BROWSER"),
+    ]
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                str(Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ]
+        )
+    elif sys.platform.startswith("win"):
+        for base in (
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if base:
+                candidates.extend(
+                    [
+                        str(Path(base) / "Google/Chrome/Application/chrome.exe"),
+                        str(Path(base) / "Microsoft/Edge/Application/msedge.exe"),
+                        str(Path(base) / "BraveSoftware/Brave-Browser/Application/brave.exe"),
+                    ]
+                )
+    candidates.extend(
+        filter(
+            None,
+            [
+                shutil.which("google-chrome"),
+                shutil.which("google-chrome-stable"),
+                shutil.which("chromium"),
+                shutil.which("chromium-browser"),
+                shutil.which("brave-browser"),
+                shutil.which("microsoft-edge"),
+                shutil.which("msedge"),
+            ],
+        )
+    )
+    out: list[str] = []
+    for candidate in candidates:
+        if candidate and Path(candidate).exists() and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+async def _browser_html(url: str, *, wait_seconds: float = 6.0) -> str:
+    import nodriver as uc
+
+    profile = Path.home() / ".codex" / "marketplaces-browser-profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {
+        "headless": False,
+        "sandbox": False,
+        "lang": "ru-RU",
+        "user_data_dir": str(profile),
+        "browser_args": [
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-dev-shm-usage",
+            "--lang=ru-RU",
+        ],
+    }
+    browsers = _browser_candidates()
+    if browsers:
+        kwargs["browser_executable_path"] = browsers[0]
+    try:
+        browser = await uc.start(**kwargs)
+    except Exception:
+        temp_profile = Path(tempfile.mkdtemp(prefix="marketplaces-browser-"))
+        kwargs["user_data_dir"] = str(temp_profile)
+        browser = await uc.start(**kwargs)
+    try:
+        tab = await browser.get(url)
+        await tab.sleep(wait_seconds)
+        return str(await tab.evaluate("document.documentElement.outerHTML"))
+    finally:
+        browser.stop()
 
 
 async def _ozon_entrypoint(path: str, cookies: dict[str, str], referer: str = "") -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -402,15 +503,7 @@ async def _search_ozon_page(query: str, page: int, cookies: dict[str, str]) -> d
     search_url = "https://www.ozon.ru/search/?" + urlencode(params)
     resp = await ozon.httpx_get(search_url, cookies)
     if ozon.is_challenge_page(resp.text):
-        return {
-            "source": "ozon",
-            "query": query,
-            "page": page,
-            "title": "",
-            "products": [],
-            "error": "cookies_expired",
-            "message": "Ozon cookies expired or challenge returned.",
-        }
+        return await _search_ozon_page_browser(query, page)
 
     redirect_url = ""
     redir = re.search(r"location\.replace\([\"'](.+?)[\"']\)", resp.text)
@@ -434,6 +527,8 @@ async def _search_ozon_page(query: str, page: int, cookies: dict[str, str]) -> d
         if page > 1:
             path += f"&page={page}"
         products, entrypoint_meta = await _ozon_entrypoint(path, cookies, search_url)
+    if not products:
+        return await _search_ozon_page_browser(query, page)
 
     title_match = re.search(r"<title>(.*?)</title>", resp.text, re.IGNORECASE)
     for product in products:
@@ -449,8 +544,31 @@ async def _search_ozon_page(query: str, page: int, cookies: dict[str, str]) -> d
     }
 
 
+async def _search_ozon_page_browser(query: str, page: int) -> dict[str, Any]:
+    params = {"text": query, "from_global": "true"}
+    if page > 1:
+        params["page"] = str(page)
+    search_url = "https://www.ozon.ru/search/?" + urlencode(params)
+    html_text = await _browser_html(search_url, wait_seconds=7.0)
+    products = ozon.parse_ozon_products(html_text)
+    title_match = re.search(r"<title>(.*?)</title>", html_text, re.IGNORECASE)
+    for product in products:
+        product["source"] = "ozon"
+        product["image"] = _as_abs_url(product.get("image", ""))
+        product["url"] = _as_abs_url(product.get("url", ""))
+    return {
+        "source": "ozon",
+        "query": query,
+        "page": page,
+        "title": title_match.group(1) if title_match else "",
+        "products": products,
+        "browser_fallback": True,
+    }
+
+
 async def _search_wb_page(query: str, page: int, cookies: dict[str, str]) -> dict[str, Any]:
-    products = await wb.search_wb(query, cookies, page=page)
+    with _vendor_stdout_to_stderr():
+        products = await wb.search_wb(query, cookies, page=page)
     for product in products:
         product["source"] = "wb"
     return {
@@ -516,6 +634,17 @@ def _collect_image_urls(obj: Any, out: list[str]) -> None:
             _collect_image_urls(item, out)
 
 
+def _review_photo_urls(obj: Any) -> list[str]:
+    photos: list[str] = []
+    _collect_image_urls(obj, photos)
+    review_photos = [
+        photo
+        for photo in photos
+        if re.search(r"/(?:rp-photo|feedbacks?)[-/]", urlparse(photo).path, re.I)
+    ]
+    return (review_photos or photos)[:20]
+
+
 def _find_first_string(obj: Any, keys: set[str]) -> str:
     if isinstance(obj, dict):
         for key, value in obj.items():
@@ -570,8 +699,6 @@ def _review_candidate(obj: dict[str, Any]) -> dict[str, Any] | None:
     rating = _find_first_number(obj, {"rating", "score", "stars", "valuation"})
     if not (text or pros or cons) or rating == "":
         return None
-    photos: list[str] = []
-    _collect_image_urls(obj, photos)
     return {
         "id": _find_first_string(obj, {"id", "uuid", "reviewid"}),
         "name": _find_first_string(obj, {"author", "authorname", "username", "name"}),
@@ -580,7 +707,7 @@ def _review_candidate(obj: dict[str, Any]) -> dict[str, Any] | None:
         "text": text,
         "pros": pros,
         "cons": cons,
-        "photos": photos,
+        "photos": _review_photo_urls(obj),
     }
 
 
@@ -640,6 +767,12 @@ async def _ozon_reviews(product_url: str, cookies: dict[str, str], *, page: int,
         meta["html_challenge"] = ozon.is_challenge_page(resp.text)
         for block in _parse_data_state_blocks(resp.text):
             _deep_collect_reviews(block, reviews, limit=limit)
+    if not reviews:
+        html_text = await _browser_html(reviews_url, wait_seconds=7.0)
+        meta["browser_fallback"] = True
+        meta["browser_challenge"] = ozon.is_challenge_page(html_text)
+        for block in _parse_data_state_blocks(html_text):
+            _deep_collect_reviews(block, reviews, limit=limit)
 
     return {
         "source": "ozon",
@@ -686,11 +819,13 @@ async def marketplace_status(check_live: bool = False) -> dict[str, Any]:
         status["dependencies"]["nodriver"] = True
     if check_live:
         with contextlib.suppress(Exception):
-            saved = ozon.load_cookies()
-            status["live"]["ozon"] = bool(saved and await ozon.httpx_check(ozon.cookies_to_dict(saved)))
+            with _vendor_stdout_to_stderr():
+                saved = ozon.load_cookies()
+                status["live"]["ozon"] = bool(saved and await ozon.httpx_check(ozon.cookies_to_dict(saved)))
         with contextlib.suppress(Exception):
-            saved = wb.load_cookies()
-            status["live"]["wb"] = bool(saved and await wb.httpx_check(wb.cookies_to_dict(saved)))
+            with _vendor_stdout_to_stderr():
+                saved = wb.load_cookies()
+                status["live"]["wb"] = bool(saved and await wb.httpx_check(wb.cookies_to_dict(saved)))
     return status
 
 
@@ -801,8 +936,9 @@ async def marketplace_product(
             raise ValueError("WB product requires product_id or url.")
         pid = _extract_wb_id(product_id or url)
         cookies = await _ensure_wb(force_browser=force_refresh_cookies)
-        variant = await wb.wb_variant_info(pid, cookies)
-        details = await wb.wb_product_detail(pid, cookies)
+        with _vendor_stdout_to_stderr():
+            variant = await wb.wb_variant_info(pid, cookies)
+            details = await wb.wb_product_detail(pid, cookies)
         card = await _wb_card(pid, cookies)
         payload = {
             "ok": True,
@@ -834,7 +970,14 @@ async def marketplace_product(
             "title": "",
             "id": product_id or _extract_ozon_id(product_url),
         }
-        product = await ozon.fetch_product_details(product, cookies, save_html=False)
+        with _vendor_stdout_to_stderr():
+            product = await ozon.fetch_product_details(product, cookies, save_html=False)
+        if not (product.get("description") or product.get("characteristics") or product.get("images")):
+            html_text = await _browser_html(product_url, wait_seconds=5.0)
+            details = ozon.parse_product_description(html_text)
+            product["description"] = details.get("description", "")
+            product["characteristics"] = details.get("characteristics", {})
+            product["images"] = details.get("images", [])
         payload = {
             "ok": True,
             "source": "ozon",
@@ -888,7 +1031,8 @@ async def marketplace_reviews(
             resolved_imt = str(card.get("imt_id") or card.get("imtId") or "")
         if not resolved_imt:
             raise ValueError("WB reviews require imt_id, or product_id/url to resolve imt_id.")
-        data = await wb.wb_get_reviews(resolved_imt, nm_id or pid)
+        with _vendor_stdout_to_stderr():
+            data = await wb.wb_get_reviews(resolved_imt, nm_id or pid)
         reviews = data.get("reviews", [])
         payload = {
             "ok": True,
