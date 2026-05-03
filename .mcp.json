@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "marketplaces": {
+      "command": "python3",
+      "args": [
+        "./scripts/marketplace_products_server.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

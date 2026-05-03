@@ -1,0 +1,5 @@
+mcp>=1.26.0
+httpx[http2]>=0.28.1
+curl_cffi>=0.13.0
+nodriver>=0.48.1
+pillow>=11.0.0
