@@ -156,8 +156,46 @@ def _save_cookie_file(
 
 
 async def _all_cookies(browser: Any) -> list[dict[str, Any]]:
-    raw = await browser.cookies.get_all()
-    return [_serialize_cookie(cookie) for cookie in raw]
+    with contextlib.suppress(Exception):
+        raw = await browser.cookies.get_all()
+        cookies = [_serialize_cookie(cookie) for cookie in raw]
+        if cookies:
+            return cookies
+
+    tabs = await browser.tabs
+    for tab in tabs:
+        with contextlib.suppress(Exception):
+            raw = await tab.send(uc.cdp.storage.get_cookies())
+            cookies = [_serialize_cdp_cookie(cookie) for cookie in raw]
+            if cookies:
+                return cookies
+    return []
+
+
+def _serialize_cdp_cookie(cookie: Any) -> dict[str, Any]:
+    if isinstance(cookie, dict):
+        get = cookie.get
+    else:
+        get = lambda key, default=None: getattr(cookie, key, default)
+    item = {
+        "name": get("name", ""),
+        "value": get("value", ""),
+        "domain": get("domain", ""),
+        "path": get("path", "/"),
+    }
+    expires = get("expires", None)
+    if expires and expires > 0:
+        item["expires"] = expires
+    if get("secure", False):
+        item["secure"] = True
+    if get("http_only", False) or get("httpOnly", False):
+        item["httpOnly"] = True
+    same_site = get("same_site", None) or get("sameSite", None)
+    if same_site:
+        value = str(getattr(same_site, "value", same_site))
+        if value and value != "None":
+            item["sameSite"] = value
+    return item
 
 
 async def main() -> None:
