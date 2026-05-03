@@ -100,7 +100,11 @@ function copyBundle(dest) {
     log(`source already at ${dest}`);
     return;
   }
-  fs.rmSync(dest, { recursive: true, force: true });
+  if (!fs.existsSync(path.join(dest, ".git"))) {
+    fs.rmSync(dest, { recursive: true, force: true });
+  } else {
+    log(`preserving git checkout at ${dest}`);
+  }
   copyDir(packageRoot, dest);
   fs.mkdirSync(path.join(dest, "data"), { recursive: true });
 }
