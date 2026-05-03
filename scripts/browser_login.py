@@ -155,6 +155,35 @@ def _save_cookie_file(
         print(f"[saved] {market}: {target} ({len(cookies)} cookies)", flush=True)
 
 
+def _read_cookie_file(path: Path) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _existing_login_cookies(market: str, data_dirs: list[Path]) -> list[dict[str, Any]]:
+    file_name = MARKETS[market]["cookie_file"]
+    for data_dir in data_dirs:
+        cookies = _filter_cookies(_read_cookie_file(data_dir / file_name), market)
+        if _is_logged_in(cookies, market):
+            return cookies
+    return []
+
+
+def _mark_existing_logins(markets: list[str], data_dirs: list[Path]) -> set[str]:
+    done: set[str] = set()
+    for market in markets:
+        cookies = _existing_login_cookies(market, data_dirs)
+        if not cookies:
+            continue
+        _save_cookie_file(market, cookies, data_dirs)
+        done.add(market)
+        print(f"[login] {market}: existing login cookies detected", flush=True)
+    return done
+
+
 async def _all_cookies(browser: Any) -> list[dict[str, Any]]:
     with contextlib.suppress(Exception):
         raw = await browser.cookies.get_all()
@@ -215,6 +244,12 @@ async def main() -> None:
         data_dir.mkdir(parents=True, exist_ok=True)
     args.profile.mkdir(parents=True, exist_ok=True)
 
+    done = _mark_existing_logins(markets, data_dirs)
+    markets_to_open = [market for market in markets if market not in done]
+    if not markets_to_open:
+        print("[done] marketplace cookies saved", flush=True)
+        return
+
     browser_paths = _browser_candidates()
     browser_path = browser_paths[0] if browser_paths else None
     if browser_path:
@@ -248,9 +283,8 @@ async def main() -> None:
         browser_kwargs["user_data_dir"] = str(temp_profile)
         browser = await uc.start(**browser_kwargs)
     tabs: dict[str, Any] = {}
-    done: set[str] = set()
     try:
-        for index, market in enumerate(markets):
+        for index, market in enumerate(markets_to_open):
             tab = await browser.get(
                 MARKETS[market]["url"],
                 new_window=index > 0,
@@ -263,7 +297,10 @@ async def main() -> None:
             await tab.sleep(1)
 
         print("", flush=True)
-        names = " and ".join("Ozon" if market == "ozon" else "Wildberries" for market in markets)
+        names = " and ".join(
+            "Ozon" if market == "ozon" else "Wildberries"
+            for market in markets_to_open
+        )
         print(f"Log in to {names} in the opened browser window(s).", flush=True)
         print("Each window closes automatically after login cookies appear.", flush=True)
         print("The installer continues after both marketplaces are logged in.", flush=True)
@@ -276,6 +313,19 @@ async def main() -> None:
                 missing = ", ".join(market for market in markets if market not in done)
                 raise TimeoutError(f"login timeout for: {missing}")
 
+            for market in markets:
+                if market in done:
+                    continue
+                existing = _existing_login_cookies(market, data_dirs)
+                if not existing:
+                    continue
+                _save_cookie_file(market, existing, data_dirs)
+                done.add(market)
+                print(f"[login] {market}: existing login cookies detected", flush=True)
+                if market in tabs:
+                    with contextlib.suppress(Exception):
+                        await tabs[market].close()
+
             serialized = await _all_cookies(browser)
             for market in markets:
                 if market in done:
@@ -286,8 +336,9 @@ async def main() -> None:
                 _save_cookie_file(market, market_cookies, data_dirs)
                 done.add(market)
                 print(f"[login] {market}: login detected, closing window", flush=True)
-                with contextlib.suppress(Exception):
-                    await tabs[market].close()
+                if market in tabs:
+                    with contextlib.suppress(Exception):
+                        await tabs[market].close()
 
             now = time.time()
             if now - last_hint > 15:
