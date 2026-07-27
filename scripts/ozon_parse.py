@@ -111,7 +111,6 @@ def _parse_tile(item: dict[str, Any]) -> dict[str, Any] | None:
         "brand": "",
         "price": "",
         "price_value": None,
-        "old_price": "",
         "discount": "",
         "rating": "",
         "reviews": "",
@@ -122,14 +121,14 @@ def _parse_tile(item: dict[str, Any]) -> dict[str, Any] | None:
             continue
         kind = block.get("type")
         if kind == "priceV2":
+            # Only the price Ozon headlines (with an Ozon Card). The crossed-out and
+            # no-card prices are deliberately dropped: nobody shops by them and two
+            # extra numbers per tile only invite quoting the wrong one.
             price = block.get("priceV2") or {}
             for entry in price.get("price") or []:
-                style = entry.get("textStyle")
-                if style == "PRICE":
+                if entry.get("textStyle") == "PRICE":
                     tile["price"] = entry.get("text", "")
                     tile["price_value"] = _money(tile["price"])
-                elif style == "ORIGINAL_PRICE":
-                    tile["old_price"] = entry.get("text", "")
             tile["discount"] = price.get("discount", "")
         elif kind in {"textDS", "textAtom"} and not tile["title"]:
             body = block.get(kind) or {}
@@ -253,13 +252,11 @@ def parse_product(main: dict[str, Any], extra: dict[str, Any] | None = None) -> 
     card["title"] = text_of(heading.get("title"))
 
     price = widget(main, "webPrice")
-    card["price_card"] = price.get("cardPrice", "")
-    card["price"] = price.get("price", "")
-    card["price_original"] = price.get("originalPrice", "")
-    card["price_card_value"] = _money(card["price_card"])
+    # One price only — the Ozon Card one Ozon headlines, falling back to the plain
+    # price for the rare product that has no card price at all.
+    card["price"] = price.get("cardPrice", "") or price.get("price", "")
     card["price_value"] = _money(card["price"])
-    card["price_original_value"] = _money(card["price_original"])
-    card["price_note"] = "price_card is the Ozon Card price; price is the regular one."
+    card["price_note"] = "price is the Ozon Card price — the one Ozon shows as the price."
     if "isAvailable" in price:
         card["in_stock"] = bool(price.get("isAvailable"))
 
@@ -386,7 +383,6 @@ def _parse_aspects(state: dict[str, Any]) -> list[dict[str, Any]]:
                     "value": text_of(data.get("textRs")) or data.get("searchableText", ""),
                     "price": data.get("price", ""),
                     "price_value": variant.get("price"),
-                    "old_price": data.get("originalPrice", ""),
                     "availability": variant.get("availability", ""),
                     "active": bool(variant.get("active")),
                     "url": abs_url(str(variant.get("link") or "").split("?")[0]),
@@ -461,6 +457,75 @@ def _walk_rich(node: Any, parts: list[str], images: list[str]) -> None:
     elif isinstance(node, list):
         for value in node:
             _walk_rich(value, parts, images)
+
+
+# ── size table ───────────────────────────────────────────────────────────────
+
+
+def size_table_link(data: dict[str, Any]) -> str:
+    """The 'Таблица размеров' modal path, if this product has sizes at all."""
+    for aspect in widget(data, "webAspects").get("aspects") or []:
+        link = str((aspect.get("additionalInfo") or {}).get("linkModal") or "")
+        if link:
+            return link
+    return ""
+
+
+def parse_size_table(data: dict[str, Any]) -> dict[str, Any]:
+    """The size chart behind that modal, in whichever of its three shapes it comes.
+
+    Ozon serves 'constructor' (its own builder), 'legacy' (a brand's own grid) and
+    'gallery' (the seller just uploaded a picture of a table). Only the first two
+    carry text; the third is reported as image URLs, because guessing numbers off
+    a JPEG is exactly the mistake that gets clothes returned.
+    """
+    state = widget(data, "webSizeTable")
+    if not state:
+        return {}
+    params = state.get("params") or {}
+    table: dict[str, Any] = {
+        "title": params.get("heading", ""),
+        "category": params.get("instruction", ""),
+        "tables": [],
+        "notes": [],
+        "images": [],
+    }
+    kind = state.get("type")
+    if kind == "constructor":
+        for block in (state.get("tableConstructorJson") or {}).get("content") or []:
+            body = block.get("table") or {}
+            rows = [_size_row(row) for row in body.get("body") or []]
+            if rows:
+                table["tables"].append({"title": body.get("title", ""), "rows": rows})
+            # A disclaimer rides along under more than one widgetName, so go by the key.
+            note = block.get("disclaimer") or {}
+            text = " ".join(part for part in (note.get("title"), note.get("body")) if part)
+            if text:
+                table["notes"].append(text.strip())
+    elif kind == "legacy":
+        for body in state.get("tables") or []:
+            keys = [str(field.get("key")) for field in body.get("fields") or []]
+            rows = [[str(item.get(key, "")).strip() for key in keys] for item in body.get("items") or []]
+            if rows:
+                table["tables"].append({"title": body.get("caption", ""), "rows": rows})
+    elif kind == "gallery":
+        table["images"] = [
+            abs_url(str(image.get("src") or ""))
+            for image in (state.get("gallery") or {}).get("images") or []
+        ]
+        table["images"] = [url for url in table["images"] if url]
+    return table if (table["tables"] or table["images"]) else {}
+
+
+def _size_row(row: dict[str, Any]) -> list[str]:
+    """One chart row, flattened. Ozon writes the label cell as [name, unit]."""
+    cells = []
+    for cell in row.get("data") or []:
+        if isinstance(cell, list):
+            cells.append(" ".join(str(part).strip() for part in cell if str(part).strip()))
+        else:
+            cells.append(str(cell).strip())
+    return cells
 
 
 # ── reviews ──────────────────────────────────────────────────────────────────
@@ -702,8 +767,97 @@ def parse_orders(data: dict[str, Any]) -> list[dict[str, Any]]:
     return orders
 
 
+# ── cart ─────────────────────────────────────────────────────────────────────
+
+# Ozon prices a cart line twice: with an Ozon Card and without it. Only the card
+# price is reported; the no-card one is the fallback for a line that lacks it.
+CART_PRICE_STYLES = ("CARD_PRICE", "SECOND_LVL")
+
+
+def parse_cart(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Cart lines, grouped the way the page groups them.
+
+    Ozon renders one cartSplit widget per section ('Доступны для заказа',
+    'Недоступны для заказа', …), so the section title is the only thing saying an
+    item cannot actually be ordered — keep it rather than flattening it away.
+    """
+    sections = []
+    for state in widgets(data, "cartSplit"):
+        items = [_parse_cart_item(entry) for entry in state.get("cartItems") or []]
+        items = [item for item in items if item]
+        if items:
+            sections.append(
+                {"title": text_of((state.get("header") or {}).get("title")), "items": items}
+            )
+    return sections
+
+
+def _parse_cart_item(entry: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    product = entry.get("product") or {}
+    quantity = ((entry.get("controls") or {}).get("quantity")) or {}
+    prices: dict[str, str] = {}
+    item: dict[str, Any] = {
+        "id": str(product.get("id") or ""),
+        "title": "",
+        "price": "",
+        "quantity": quantity.get("current"),
+        "max_quantity": quantity.get("maximum"),
+        "selected": bool((entry.get("checkbox") or {}).get("isChecked")),
+        "badges": [],
+        "url": abs_url(
+            str(((product.get("common") or {}).get("action") or {}).get("link") or "").split("?")[0]
+        ),
+        "image": abs_url(str(((product.get("image") or {}).get("image") or {}).get("url") or "")),
+    }
+    for block in product.get("titleColumn") or []:
+        kind = block.get("type")
+        if kind == "text" and not item["title"]:
+            item["title"] = text_of(block.get("text"))
+        elif kind == "badges":
+            item["badges"] += [
+                text_of(badge) for badge in (block.get("badges") or {}).get("elements") or []
+            ]
+    for block in product.get("priceColumn") or []:
+        for element in (block.get("prices") or {}).get("elements") or []:
+            style = (element.get("priceStyle") or {}).get("styleType")
+            text = next(
+                (
+                    entry.get("text", "")
+                    for entry in element.get("price") or []
+                    if entry.get("textStyle") == "PRICE"
+                ),
+                "",
+            )
+            if style in CART_PRICE_STYLES and text:
+                prices.setdefault(style, text)
+    item["price"] = prices.get("CARD_PRICE") or prices.get("SECOND_LVL") or ""
+    item["price_value"] = _money(item["price"])
+    item["badges"] = [badge for badge in dict.fromkeys(item["badges"]) if badge]
+    return item if item["id"] else None
+
+
+def parse_cart_total(data: dict[str, Any]) -> dict[str, Any]:
+    """The cart footer: what it costs to buy what is ticked.
+
+    Only the Ozon Card total is reported. Ozon's footer also carries the
+    pre-discount subtotal and a no-card total, and three totals in one answer is
+    exactly how the wrong one ends up quoted.
+    """
+    summary = widget(data, "total").get("summary") or {}
+    # Ozon colours some totals with an inline <span>.
+    total = re.sub(r"<[^>]+>", "", text_of((summary.get("footer") or {}).get("price"))).strip()
+    return {
+        "info": text_of((summary.get("header") or {}).get("info")),
+        "total": total,
+        "total_value": _money(total),
+        "note": "total is the Ozon Card total for the ticked items.",
+    }
+
+
 def parse_empty_state(data: dict[str, Any]) -> str:
-    for prefix in ("statusWidget", "emptyState"):
+    for prefix in ("statusWidget", "emptyState", "emptyCart"):
         state = widget(data, prefix)
         title = text_of(state.get("titleAtom") or state.get("title"))
         if title:

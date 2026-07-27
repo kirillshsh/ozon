@@ -1,7 +1,7 @@
 {
   "name": "ozon",
   "version": "0.1.0",
-  "description": "Search Ozon, open full product cards, read reviews with photos and product Q&A, and check your own orders — read-only.",
+  "description": "Search Ozon, open full product cards, read reviews with photos and product Q&A, check your own orders and manage your cart.",
   "author": {
     "name": "kirillshsh",
     "url": "https://github.com/kirillshsh"
@@ -20,19 +20,21 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Ozon",
-    "shortDescription": "Search Ozon, full cards, reviews with photos, Q&A",
-    "longDescription": "Read-only Ozon connector. Paginated search and catalogue browsing with price/rating filters, full product cards (Ozon Card price, regular price, all specs, variants, seller rating, every photo), buyer reviews with rating and media filters plus the actual review photos as images, product questions with seller answers, and read-only access to your own orders and favourites. Login happens in a real browser window that you complete yourself; cookies stay on this machine.",
+    "shortDescription": "Search Ozon, full cards, reviews with photos, Q&A, cart",
+    "longDescription": "Ozon connector. Paginated search and catalogue browsing with price/rating filters, full product cards (Ozon Card price — the only price reported, all specs, variants, seller rating, every photo, and the size chart for clothing), buyer reviews with rating and media filters plus the actual review photos as images, product questions with seller answers, read-only access to your own orders and favourites, and your cart — see what is in it with totals, and add a product to it. It cannot place an order: checkout stays with you on ozon.ru. Login happens in a real browser window that you complete yourself; cookies stay on this machine.",
     "developerName": "Kirill",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
-      "Read"
+      "Read",
+      "Write"
     ],
     "websiteURL": "https://github.com/kirillshsh/marketplaces",
     "defaultPrompt": [
       "Найди на Ozon беспроводные наушники до 3000 ₽ и покажи цены по Ozon Карте.",
       "Открой карточку этого товара на Ozon: характеристики, варианты и продавец.",
-      "Покажи отзывы с фото по этому товару и сами фотографии."
+      "Покажи отзывы с фото по этому товару и сами фотографии.",
+      "Подбери мне футболку на Ozon по размерной сетке и добавь в корзину."
     ],
     "brandColor": "#005BFF",
     "composerIcon": "./assets/ozon-icon.svg",

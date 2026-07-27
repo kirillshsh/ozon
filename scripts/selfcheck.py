@@ -97,8 +97,7 @@ async def main() -> int:
     print(f"product  {url}")
     card = await tools.ozon_product(url=url)
     check("title", bool(card.get("title")))
-    check("ozon card price", bool(card.get("price_card")))
-    check("regular price", bool(card.get("price")))
+    check("ozon card price", bool(card.get("price")))
     check("characteristics", card.get("characteristics_count", 0) > 0, str(card.get("characteristics_count")))
     check("images", len(card.get("images") or []) > 0, str(len(card.get("images") or [])))
     check("seller", bool(card.get("seller", {}).get("name")))
@@ -123,6 +122,40 @@ async def main() -> int:
     print("catalog")
     catalog = await tools.ozon_catalog()
     check("root categories", len(catalog.get("categories") or []) > 5)
+
+    # Sizes decide whether clothing can be shopped for at all, and they live in two
+    # places that break independently: the size aspect on the card and the chart
+    # behind its own modal. Scan a few tiles — not every listing is sized.
+    print("clothing sizes")
+    clothes = await tools.ozon_search(query="футболка мужская", limit=6)
+    sized = chart = None
+    for tile in (clothes.get("products") or [])[:3]:
+        card = await tools.ozon_product(url=tile["url"], include_description=False)
+        aspects = {aspect.get("key"): aspect for aspect in card.get("variants") or []}
+        sized = sized or aspects.get("size")
+        chart = chart or card.get("size_table")
+    check("size variants offered", bool(sized and sized.get("variants")))
+    check("size variants say availability", bool(sized and sized["variants"][0].get("availability")))
+    check(
+        "size chart returned",
+        bool(chart and (chart.get("tables") or chart.get("images"))),
+        "as text" if (chart or {}).get("tables") else "as image only",
+    )
+
+    # Read-only: the cart is the user's own, so nothing is added here. With an empty
+    # cart only the empty state can be asserted; the line shape is checked when there
+    # is something to check.
+    print("cart")
+    cart = await tools.ozon_cart()
+    items = [item for section in cart.get("sections") or [] for item in section["items"]]
+    check("cart answers", cart.get("ok") is True, f"{len(items)} item(s)")
+    if items:
+        check("cart item has title", all(item.get("title") for item in items))
+        check("cart item has quantity", all(item.get("quantity") for item in items))
+        check("cart item has price", all(item.get("price") for item in items))
+        check("cart total", bool(cart.get("summary", {}).get("total")))
+    else:
+        check("empty cart explained", bool(cart.get("empty_state")), cart.get("empty_state", ""))
 
     print()
     if failures:

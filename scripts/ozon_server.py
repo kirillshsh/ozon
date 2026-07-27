@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Ozon MCP server — read-only shopper's view of ozon.ru.
+"""Ozon MCP server — a shopper's view of ozon.ru, plus the cart.
 
 Data comes from Ozon's own storefront JSON API (composer-api page/json/v2),
-using the cookies of a browser session the user logged in by hand. Nothing here
-writes to the account: no cart, no orders, no favourites changes, no reviews.
+using the cookies of a browser session the user logged in by hand. The only tool
+that writes to the account is ozon_cart_add; nothing here places an order,
+cancels one, changes favourites or posts reviews.
 """
 from __future__ import annotations
 
@@ -31,13 +32,17 @@ LOCATION_FILE = DATA_DIR / "location.json"
 server = FastMCP(
     name="ozon",
     instructions=(
-        "Read-only access to ozon.ru as the logged-in user: search and catalogue "
-        "browsing, full product cards, buyer reviews with photos, product Q&A, "
-        "own orders and favourites.\n"
+        "Access to ozon.ru as the logged-in user: search and catalogue browsing, "
+        "full product cards, buyer reviews with photos, product Q&A, own orders, "
+        "favourites and cart.\n"
         "Typical flow: ozon_search -> take a product url -> ozon_product / "
         "ozon_reviews / ozon_questions on that url.\n"
-        "Prices: the headline price on Ozon is the price WITH an Ozon Card; a card "
-        "also reports the regular price and the crossed-out one.\n"
+        "Everything is read-only except ozon_cart_add, which puts a product in the "
+        "user's real cart — ask them before calling it. Nothing here can place or "
+        "cancel an order; checkout stays with the user on ozon.ru.\n"
+        "Prices: every `price` here is the price WITH an Ozon Card — the number Ozon "
+        "headlines and the one its own price filter matches. Crossed-out and no-card "
+        "prices are deliberately not reported.\n"
         "Images are never attached unless a tool is explicitly asked for them — use "
         "ozon_review_media or ozon_product(include_images=true).\n"
         "CAPTCHA RULE: if any tool reports session_expired, Ozon is showing a captcha or "
@@ -110,6 +115,20 @@ def _expired(exc: Exception) -> dict[str, Any]:
             "they say they are done; then retry the tool that failed."
             if opened
             else "A login window is already open — tell the user to pass the captcha there, then retry."
+        ),
+    }
+
+
+def _anonymous(data: dict[str, Any], what: str) -> dict[str, Any] | None:
+    """Account pages render for logged-out visitors too — with nobody's data in them."""
+    if parse.parse_account(data).get("logged_in"):
+        return None
+    return {
+        "ok": False,
+        "error": "anonymous_session",
+        "message": (
+            f"Ozon answered anonymously — {what} need a logged-in session. "
+            "Run ozon_refresh_cookies."
         ),
     }
 
@@ -397,8 +416,8 @@ async def ozon_search(
     The `url` of every result is what ozon_product / ozon_reviews / ozon_questions
     take as input — pass it through verbatim.
 
-    price on a tile is the price WITH an Ozon Card (that is what Ozon shows and
-    what its own price filter matches); old_price is the crossed-out one.
+    price on a tile is the price WITH an Ozon Card — what Ozon shows and what its
+    own price filter matches. Crossed-out and no-card prices are not reported.
 
     page: 1-based; each page is a fresh slice from Ozon. limit: how many tiles to
       return (the tool follows Ozon's paginator until it has that many, so
@@ -440,7 +459,7 @@ async def ozon_search(
         "products": tiles,
         "available_filters": meta.get("filters", []),
         "available_sortings": meta.get("sortings", []),
-        "price_note": "product.price is the Ozon Card price; product.old_price is the crossed-out price.",
+        "price_note": "product.price is the Ozon Card price.",
         "requests_made": meta.get("requests", 0),
     }
 
@@ -519,11 +538,23 @@ async def ozon_product(
     Input: a product url from ozon_search (preferred) or a bare numeric
     product_id / SKU.
 
-    Returns price_card (with an Ozon Card), price (regular) and price_original
-    (crossed out), in_stock and stock_left, ALL characteristics, the description
-    and rich-content images, brand and breadcrumbs, the seller with their rating
-    and order count, every photo and video URL, and the colour/size/volume
-    variants with their own SKU, price and url.
+    Returns price (with an Ozon Card — the only price reported), in_stock and
+    stock_left, ALL characteristics, the description and rich-content images,
+    brand and breadcrumbs, the seller with their rating and order count, every
+    photo and video URL, and the colour/size/volume variants with their own SKU,
+    price and url.
+
+    Clothing and shoes additionally return `size_table`: the 'Таблица размеров'
+    chart as rows of text (labels plus measurements in cm) and the seller's
+    measuring notes, so a size can be matched to real body measurements instead
+    of guessed. When the seller uploaded the chart as a picture there is no text
+    to read — `size_table.images` holds the URLs, and ozon_review_media
+    (image_urls=[...]) will show them. Not every product has a chart at all; the
+    key is simply absent then, and `size_note` says what to do with it.
+
+    Which sizes can actually be bought is in `variants`, not in the chart: only a
+    variant with availability='inStock' is orderable, and each variant has its own
+    SKU to pass to ozon_cart_add.
 
     include_description=false skips a second request (faster, no specs or text).
     include_images=true additionally attaches the first `image_limit` photos as
@@ -540,10 +571,27 @@ async def ozon_product(
                 _product_path(product_url, layout_container="pdpPage2column", layout_page_index=2),
                 referer=product_url,
             )
+        # Only clothing and shoes carry this link, so the extra request is paid for
+        # exactly by the products where picking the wrong size is the whole risk.
+        size_link = parse.size_table_link(main)
+        sizes = await SESSION.page_json(size_link, referer=product_url) if size_link else {}
     except (OzonChallenge, OzonBlocked) as exc:
         return _expired(exc)
 
     card = parse.parse_product(main, extra)
+    size_table = parse.parse_size_table(sizes) if sizes else {}
+    if size_table:
+        card["size_table"] = size_table
+        card["size_note"] = (
+            "Sizes come from `variants` (only availability='inStock' can be bought); "
+            "`size_table` maps them to body measurements in cm. "
+            + (
+                "This chart is only a picture — pass size_table.images to "
+                "ozon_review_media(image_urls=[...]) to read it, do not guess its numbers."
+                if size_table.get("images")
+                else "Row 1 of each table is the size labels; the rest are measurements."
+            )
+        )
     card["url"] = product_url
     card["id"] = card.get("id") or client.product_id_from_url(product_url)
     card["ok"] = bool(card.get("title"))
@@ -817,8 +865,8 @@ async def ozon_orders(status: str = "active", page: int = 1) -> dict[str, Any]:
     'В пути'), delivery method, item thumbnails with prices, and a link to the
     order page on ozon.ru.
 
-    This tool cannot place, change or cancel anything — the whole server is
-    read-only by design."""
+    This tool cannot place, change or cancel anything — ordering stays with the
+    user on ozon.ru."""
     tab = "archive" if status.strip().lower().startswith(("arch", "заверш", "выпол")) else "active"
     try:
         data = await SESSION.page_json(
@@ -827,13 +875,9 @@ async def ozon_orders(status: str = "active", page: int = 1) -> dict[str, Any]:
         )
     except (OzonChallenge, OzonBlocked) as exc:
         return _expired(exc)
-    account = parse.parse_account(data)
-    if not account.get("logged_in"):
-        return {
-            "ok": False,
-            "error": "anonymous_session",
-            "message": "Ozon answered anonymously — orders need a logged-in session. Run ozon_refresh_cookies.",
-        }
+    anonymous = _anonymous(data, "orders")
+    if anonymous:
+        return anonymous
     orders = parse.parse_orders(data)
     return {
         "ok": True,
@@ -842,7 +886,7 @@ async def ozon_orders(status: str = "active", page: int = 1) -> dict[str, Any]:
         "total_returned": len(orders),
         "orders": orders,
         "empty_state": "" if orders else parse.parse_empty_state(data),
-        "account": account.get("email", ""),
+        "account": parse.parse_account(data).get("email", ""),
     }
 
 
@@ -860,13 +904,9 @@ async def ozon_favorites(page: int = 1, limit: int = 36) -> dict[str, Any]:
         )
     except (OzonChallenge, OzonBlocked) as exc:
         return _expired(exc)
-    account = parse.parse_account(data)
-    if not account.get("logged_in"):
-        return {
-            "ok": False,
-            "error": "anonymous_session",
-            "message": "Ozon answered anonymously — favourites need a logged-in session. Run ozon_refresh_cookies.",
-        }
+    anonymous = _anonymous(data, "favourites")
+    if anonymous:
+        return anonymous
     tiles = parse.parse_tiles(data)[:limit]
     return {
         "ok": True,
@@ -874,6 +914,95 @@ async def ozon_favorites(page: int = 1, limit: int = 36) -> dict[str, Any]:
         "total_returned": len(tiles),
         "products": tiles,
         "empty_state": "" if tiles else parse.parse_empty_state(data),
+    }
+
+
+# ── cart ─────────────────────────────────────────────────────────────────────
+
+
+def _cart_payload(data: dict[str, Any]) -> dict[str, Any]:
+    sections = parse.parse_cart(data)
+    items = [item for section in sections for item in section["items"]]
+    return {
+        "ok": True,
+        "total_items": len(items),
+        "sections": sections,
+        "summary": parse.parse_cart_total(data) if items else {},
+        "empty_state": "" if items else parse.parse_empty_state(data),
+        "checkout_note": "Ordering is not possible from here — the user checks out on ozon.ru.",
+    }
+
+
+@server.tool()
+async def ozon_cart() -> dict[str, Any]:
+    """Show what is in the user's Ozon cart right now, with the totals. Read-only.
+
+    Items come grouped in `sections` exactly as the page groups them, because the
+    section title ('Доступны для заказа', 'Недоступны для заказа', …) is what says
+    whether a line can actually be ordered. Each item carries its title, quantity,
+    Ozon Card price (`price`), whether its checkbox is ticked (`selected` —
+    unticked lines are left out of the total), its product url and image.
+
+    `summary.total` is what the ticked items cost with an Ozon Card."""
+    try:
+        data = await SESSION.page_json("/cart", cache=False)
+    except (OzonChallenge, OzonBlocked) as exc:
+        return _expired(exc)
+    return _anonymous(data, "the cart") or _cart_payload(data)
+
+
+@server.tool()
+async def ozon_cart_add(url: str = "", product_id: str = "", quantity: int = 1) -> dict[str, Any]:
+    """Put a product into the user's real Ozon cart. This CHANGES their account.
+
+    Ask the user before calling it. It does not buy anything — no order is placed
+    and no money moves; checkout stays with the user on ozon.ru.
+
+    url / product_id: the product, same values ozon_product takes. For a product
+    with colour/size variants, pass the url or SKU of the exact variant from
+    ozon_product's `variants` — the base product id adds whichever variant Ozon
+    picks.
+
+    quantity is the ABSOLUTE quantity of that item in the cart, not an increment:
+    calling it twice with quantity=1 leaves one item, not two.
+
+    Ozon answers 'success' even for a SKU it then refuses to keep, so the tool
+    re-reads the cart afterwards and returns it. `added` is the line as it really
+    ended up there — if it is null the product did not make it in (sold out,
+    wrong SKU) and the response says so."""
+    quantity = _clamp(quantity, 1, 2000)
+    try:
+        product_url = client.normalize_product_url(url=url, product_id=product_id)
+        sku = client.product_id_from_url(product_url)
+        if not sku:
+            raise ValueError(f"No product id in {product_url} — pass a /product/<id>/ url.")
+        await SESSION.action("addToCart", [{"id": int(sku), "quantity": quantity}], referer=product_url)
+        data = await SESSION.page_json("/cart", cache=False)
+    except (OzonChallenge, OzonBlocked) as exc:
+        return _expired(exc)
+    anonymous = _anonymous(data, "the cart")
+    if anonymous:
+        return anonymous
+    cart = _cart_payload(data)
+    added = next(
+        (item for section in cart["sections"] for item in section["items"] if item["id"] == sku), None
+    )
+    return {
+        **cart,
+        "ok": bool(added),
+        "requested": {"url": product_url, "id": sku, "quantity": quantity},
+        "added": added,
+        **(
+            {}
+            if added
+            else {
+                "error": "not_in_cart",
+                "message": (
+                    "Ozon accepted the request but the product is not in the cart — it is "
+                    "usually out of stock or the SKU does not exist. Check ozon_product."
+                ),
+            }
+        ),
     }
 
 

@@ -1,6 +1,6 @@
 # Ozon MCP
 
-Local MCP plugin that gives an agent a shopper's read-only view of ozon.ru.
+Local MCP plugin that gives an agent a shopper's view of ozon.ru, including the cart.
 
 > **Disclaimer.** Unofficial. It reads Ozon's public storefront through its
 > undocumented internal endpoints — not a partner/seller API, not affiliated with
@@ -13,18 +13,26 @@ Local MCP plugin that gives an agent a shopper's read-only view of ozon.ru.
 
 - paginated **search** and **catalogue** browsing with price, brand and other
   Ozon filters, plus sorting
-- **full product cards**: Ozon Card price, regular price, crossed-out price,
-  stock, every characteristic, description and rich-content images, brand,
+- **full product cards**: Ozon Card price (the only price reported anywhere —
+  crossed-out and no-card prices are deliberately dropped), stock,
+  every characteristic, description and rich-content images, brand,
   breadcrumbs, seller with rating and order count, all photo/video URLs, and the
   colour/size/volume variants with their own SKU, price and url
 - **reviews** with rating and media filters, seller-reply counts, and every photo
   and video URL; `ozon_review_media` downloads the photos and returns them as
   images (downscaled, hard-capped per call)
 - **questions and answers**, including which answers came from the seller
+- **clothing sizes**: which sizes are actually in stock, plus the product's own
+  size chart as text (RU/international labels against chest, waist, hip and
+  foot-length in cm) — or, when the seller uploaded it as a picture, the image
+  URLs to look at instead of numbers to guess
 - **your own orders and favourites**, read-only
+- **your cart**: what is in it with quantities, per-line prices and totals, and
+  `ozon_cart_add` to put a product in it
 
-There is no cart, no checkout, no favouriting, no review or question posting.
-The server has no write path at all.
+`ozon_cart_add` is the only tool that writes to the account. There is no
+checkout, no favouriting, no review or question posting — placing an order
+stays with you on ozon.ru.
 
 ## Tools
 
@@ -38,6 +46,8 @@ The server has no write path at all.
 | `ozon_questions` | product Q&A with seller answers |
 | `ozon_orders` | your orders and their statuses (read-only) |
 | `ozon_favorites` | your favourites (read-only) |
+| `ozon_cart` | what is in your cart, with totals (read-only) |
+| `ozon_cart_add` | put a product in your cart (**writes to your account**) |
 | `ozon_status` | which account the session belongs to, and is it alive |
 | `ozon_location` | the delivery city prices refer to |
 | `ozon_refresh_cookies` | opens a browser window for you to log in |

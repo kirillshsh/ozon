@@ -1,7 +1,7 @@
 {
   "name": "ozon-mcp-kirillshsh",
   "version": "0.1.0",
-  "description": "Ozon MCP server: search, product cards, reviews with photos, Q&A and your own orders — read-only, logs in with your own browser cookies.",
+  "description": "Ozon MCP server: search, product cards, reviews with photos, Q&A, your own orders and your cart — logs in with your own browser cookies.",
   "type": "module",
   "bin": {
     "ozon": "./bin/install.mjs",

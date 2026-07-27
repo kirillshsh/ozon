@@ -307,28 +307,63 @@ class Session:
                 if cache:
                     self.cache_put(key, data)
                 return data
-            if response.status_code in {401, 403} or is_challenge(body):
-                if is_ip_block(body):
-                    raise OzonBlocked(
-                        "Ozon blocked this IP address outright (HTTP "
-                        f"{response.status_code}, incident {_incident(body)}). This is not a "
-                        "session problem — logging in again will not help. Route the "
-                        "requests through a Russian IP: set OZON_PROXY to a proxy URL "
-                        "(http://user:pass@host:port or socks5://…) and retry."
-                    )
-                raise OzonChallenge(
-                    "Ozon session is not valid anymore (HTTP "
-                    f"{response.status_code}). Run ozon_refresh_cookies to log in "
-                    "again in a visible browser."
-                )
+            _raise_if_refused(response.status_code, body)
             if response.status_code in {404, 410}:
                 raise OzonHTTPError(f"Ozon returned HTTP {response.status_code} for {path}")
             last = OzonHTTPError(f"Ozon returned HTTP {response.status_code}: {body[:200]}")
             await asyncio.sleep(2**attempt + random.random())
         raise OzonHTTPError(str(last) if last else f"Ozon request failed: {path}")
 
+    async def action(self, name: str, payload: Any, *, referer: str = "") -> dict[str, Any]:
+        """POST one composer `_action` — the same write endpoint the SPA uses.
+
+        No retries: a write that may have half-landed must not be replayed blindly,
+        so a failure comes straight back to the caller.
+        """
+        from curl_cffi.requests import AsyncSession
+
+        headers = self._headers(referer or BASE + "/cart", json_api=True)
+        headers["Content-Type"] = "application/json"
+        async with self._lock:
+            await self._throttle()
+            async with AsyncSession(impersonate=IMPERSONATE, **_proxy_kwargs()) as client:
+                response = await client.post(
+                    BASE + "/api/composer-api.bx/_action/" + name,
+                    headers=headers,
+                    cookies=self.jar(),
+                    json=payload,
+                    timeout=40,
+                )
+            self._harvest(response)
+        body = response.text or ""
+        _raise_if_refused(response.status_code, body)
+        if response.status_code != 200:
+            raise OzonHTTPError(f"Ozon returned HTTP {response.status_code}: {body[:200]}")
+        self.cache_clear()  # the account state just changed; cached pages are stale
+        try:
+            return response.json()
+        except Exception as exc:
+            raise OzonHTTPError(f"Ozon action {name} returned non-JSON: {body[:200]}") from exc
+
 
 SESSION = Session()
+
+
+def _raise_if_refused(status: int, body: str) -> None:
+    """Turn Ozon's two lookalike 403s into the two different errors they mean."""
+    if status not in {401, 403} and not is_challenge(body):
+        return
+    if is_ip_block(body):
+        raise OzonBlocked(
+            f"Ozon blocked this IP address outright (HTTP {status}, incident "
+            f"{_incident(body)}). This is not a session problem — logging in again will "
+            "not help. Route the requests through a Russian IP: set OZON_PROXY to a "
+            "proxy URL (http://user:pass@host:port or socks5://…) and retry."
+        )
+    raise OzonChallenge(
+        f"Ozon session is not valid anymore (HTTP {status}). Run ozon_refresh_cookies "
+        "to log in again in a visible browser."
+    )
 
 
 def is_challenge(text: str) -> bool:
