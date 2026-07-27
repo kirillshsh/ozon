@@ -50,11 +50,12 @@ Works on macOS, Windows and Linux. You need **Node 18+**, **Python 3.10+** and
 any Chromium browser (Chrome, Edge, Brave, Chromium).
 
 ```bash
-npm install -g @kirillshsh/ozon-mcp
+npm install -g github:kirillshsh/ozon
 ozon-install
 ```
 
-From a git checkout instead: `npm run install:local`.
+To update later, run the same two commands again. From a git checkout instead:
+`npm run install:local`.
 
 The installer copies the plugin into `~/plugins/ozon` (on Windows
 `C:\Users\<you>\plugins\ozon`), creates a private Python venv, registers the
