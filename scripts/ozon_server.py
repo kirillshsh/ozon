@@ -25,7 +25,7 @@ import ozon_client as client  # noqa: E402
 import ozon_parse as parse  # noqa: E402
 from ozon_client import OzonBlocked, OzonChallenge, SESSION  # noqa: E402
 
-DATA_DIR = PLUGIN_ROOT / "data"
+DATA_DIR = client.DATA_DIR  # ~/.ozon — cookies and settings belong to the user
 LOCATION_FILE = DATA_DIR / "location.json"
 
 server = FastMCP(
@@ -72,7 +72,7 @@ def _default_city() -> str:
 def _save_city(city: str) -> None:
     import json
 
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOCATION_FILE.write_text(
         json.dumps({"city": city}, ensure_ascii=False, indent=2), encoding="utf-8"
     )

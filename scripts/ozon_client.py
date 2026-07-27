@@ -30,8 +30,14 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PLUGIN_ROOT / "data"
-COOKIES_FILE = Path(os.environ.get("OZON_COOKIES_FILE") or (DATA_DIR / "ozon_cookies.json"))
+# The session belongs to the machine's user, not to this copy of the plugin, so it
+# lives in the home directory and survives reinstalls and upgrades.
+DATA_DIR = Path(os.environ.get("OZON_HOME") or (Path.home() / ".ozon"))
+COOKIES_FILE = Path(os.environ.get("OZON_COOKIES_FILE") or (DATA_DIR / "cookies.json"))
+_LEGACY_COOKIES = PLUGIN_ROOT / "data" / "ozon_cookies.json"
+if not COOKIES_FILE.exists() and _LEGACY_COOKIES.exists():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    COOKIES_FILE.write_bytes(_LEGACY_COOKIES.read_bytes())
 
 BASE = "https://www.ozon.ru"
 COMPOSER = BASE + "/api/composer-api.bx/page/json/v2?url="

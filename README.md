@@ -49,18 +49,12 @@ Every tool carries a detailed docstring the agent reads as its description.
 Works on macOS, Windows and Linux. You need **Node 18+**, **Python 3.10+** and
 any Chromium browser (Chrome, Edge, Brave, Chromium).
 
-From the packed tarball someone sent you:
-
 ```bash
-npm install -g ./ozon-0.1.0.tgz
+npm install -g @kirillshsh/ozon-mcp
 ozon-install
 ```
 
-From a git checkout:
-
-```bash
-npm run install:local
-```
+From a git checkout instead: `npm run install:local`.
 
 The installer copies the plugin into `~/plugins/ozon` (on Windows
 `C:\Users\<you>\plugins\ozon`), creates a private Python venv, registers the
@@ -80,9 +74,9 @@ ozon-login
 
 A real Chrome window opens on ozon.ru. **You log in and pass any anti-bot check
 yourself** — the plugin never solves a captcha. As soon as the account cookies
-appear they are saved to `data/ozon_cookies.json` and the window closes. The
-cookies are yours and stay on your machine; nothing is shipped inside the
-package.
+appear they are saved to `~/.ozon/cookies.json` and the window closes. The
+cookies are yours, stay on your machine and survive plugin upgrades; nothing is
+shipped inside the package.
 
 Whenever Ozon later shows a captcha, any tool stops with
 `error: "session_expired"` and the login window opens by itself — pass the check

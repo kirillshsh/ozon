@@ -3,7 +3,7 @@
 
 We never solve the anti-bot challenge programmatically: the window stays open,
 the user signs in and clears whatever check Ozon shows, and as soon as the
-account cookies appear they are written to data/ozon_cookies.json and the
+account cookies appear they are written to ~/.ozon/cookies.json and the
 window closes.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ with contextlib.suppress(ImportError):
     import fcntl
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA = PLUGIN_ROOT / "data"
+DEFAULT_DATA = Path(os.environ.get("OZON_HOME") or (Path.home() / ".ozon"))
 DEFAULT_PROFILE = Path.home() / ".ozon" / "browser-profile"
 
 LOGIN_URL = "https://www.ozon.ru/my/main"
@@ -187,7 +187,7 @@ async def _page_usable(tab: Any) -> bool:
 
 def _save(cookies: list[dict[str, Any]], data_dir: Path) -> Path:
     data_dir.mkdir(parents=True, exist_ok=True)
-    target = data_dir / "ozon_cookies.json"
+    target = data_dir / "cookies.json"
     target.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
     with contextlib.suppress(Exception):
         target.chmod(0o600)
