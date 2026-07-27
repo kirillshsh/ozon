@@ -52,6 +52,28 @@ BLOCKED_MARKERS = (
 _profile_lock_handle: Any | None = None
 
 
+def _patch_cookie_model() -> None:
+    """Let a cookie without `sameParty` parse — Chrome stopped sending that field.
+
+    nodriver's generated CDP model still reads it as required, so every cookie
+    read raises KeyError deep inside nodriver's background listener. That kills
+    the CDP channel: the read may or may not have won the race, but nothing after
+    it ever completes, so the browser window sits on screen forever and the login
+    looks like it failed even when the cookies were already saved.
+    """
+    from nodriver.cdp import network
+
+    original = network.Cookie.from_json
+    if getattr(original, "_ozon_patched", False):
+        return
+
+    def from_json(json: dict[str, Any]) -> Any:
+        return original({"sameParty": False, **json})
+
+    from_json._ozon_patched = True  # type: ignore[attr-defined]
+    network.Cookie.from_json = staticmethod(from_json)
+
+
 def browser_candidates() -> list[str]:
     candidates = [os.environ.get("OZON_BROWSER") or os.environ.get("MARKETPLACES_BROWSER")]
     if sys.platform == "darwin":
@@ -202,6 +224,7 @@ async def login(
     timeout_minutes: float = 15.0,
     headless: bool = False,
 ) -> Path:
+    _patch_cookie_model()
     profile.mkdir(parents=True, exist_ok=True)
     _acquire_profile_lock(profile)
     try:
@@ -242,8 +265,12 @@ async def login(
                 cookies = _ozon_cookies(await _all_cookies(browser))
                 if _logged_in(cookies) and await _page_usable(tab):
                     target = _save(cookies, data_dir)
+                    # Closing the last tab takes the browser — and the CDP channel —
+                    # with it, so the reply to close() may never come. Waiting for it
+                    # forever leaves the window on screen with the cookies already
+                    # saved, which reads as "login failed" when it in fact succeeded.
                     with contextlib.suppress(Exception):
-                        await tab.close()
+                        await asyncio.wait_for(tab.close(), timeout=5)
                     return target
                 if time.time() - hinted > 15:
                     print("[login] waiting for Ozon login…", flush=True)
