@@ -6,8 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-const PLUGIN_NAME = "marketplaces";
-const MARKETPLACE_NAME = "kirill-local";
+const PLUGIN_NAME = "ozon";
+const MCP_SERVER_NAME = "ozon";
+const MARKETPLACE_NAME = "local";
 const __filename = fileURLToPath(import.meta.url);
 const packageRoot = path.resolve(path.dirname(__filename), "..");
 const packageJson = JSON.parse(
@@ -27,14 +28,16 @@ const cacheRoot = path.join(
 );
 const agentsMarketplace = path.join(home, ".agents", "plugins", "marketplace.json");
 const codexConfig = path.join(home, ".codex", "config.toml");
-const browserProfile = path.join(home, ".codex", `${PLUGIN_NAME}-browser-profile`);
+const browserProfile = path.join(home, ".ozon", "browser-profile");
 
-const args = new Set(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const args = new Set(argv);
 const skipLogin = args.has("--skip-login");
 const skipPython = args.has("--skip-python");
+const loginOnly = args.has("--login-only");
 
 function log(message) {
-  process.stdout.write(`[marketplaces] ${message}\n`);
+  process.stdout.write(`[ozon] ${message}\n`);
 }
 
 function run(cmd, cmdArgs, options = {}) {
@@ -72,7 +75,6 @@ function shouldSkip(rel) {
   if (parts.includes("__pycache__") || base.endsWith(".pyc")) return true;
   if (parts.includes(".venv") || rel.startsWith(`data${path.sep}.venv`)) return true;
   if (base === ".DS_Store") return true;
-  if (base === "wb_last_search.json") return true;
   if (rel.startsWith(`data${path.sep}`) && base.endsWith(".json")) return true;
   if (base === "result.png") return true;
   if (base.endsWith(".html") || base.startsWith("product_")) return true;
@@ -95,7 +97,7 @@ function copyDir(src, dest, root = src) {
   fs.chmodSync(dest, stat.mode);
 }
 
-const cookieFiles = ["ozon_cookies.json", "wb_cookies.json"];
+const cookieFiles = ["ozon_cookies.json"];
 
 function readCookieSnapshot(root) {
   const dataDir = path.join(root, "data");
@@ -190,9 +192,9 @@ function ensureVenv(root) {
 function writeMcp(root, pythonPath) {
   const payload = {
     mcpServers: {
-      [PLUGIN_NAME]: {
+      [MCP_SERVER_NAME]: {
         command: pythonPath,
-        args: ["./scripts/marketplace_products_server.py"],
+        args: ["./scripts/ozon_server.py"],
         cwd: ".",
       },
     },
@@ -202,6 +204,26 @@ function writeMcp(root, pythonPath) {
     `${JSON.stringify(payload, null, 2)}\n`,
     "utf8",
   );
+}
+
+function updateClaudeConfig(root, pythonPath) {
+  // Claude Code keeps user-level MCP servers in ~/.claude.json. It is a big file
+  // full of unrelated state, so back it up before touching it.
+  const file = path.join(home, ".claude.json");
+  let data = {};
+  if (fs.existsSync(file)) {
+    fs.copyFileSync(file, `${file}.ozon-backup`);
+    data = JSON.parse(fs.readFileSync(file, "utf8"));
+  }
+  data.mcpServers ||= {};
+  data.mcpServers[MCP_SERVER_NAME] = {
+    type: "stdio",
+    command: pythonPath,
+    args: [path.join(root, "scripts", "ozon_server.py")],
+    cwd: root,
+  };
+  fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  log("registered in Claude Code (~/.claude.json)");
 }
 
 function updateMarketplaceJson() {
@@ -231,7 +253,6 @@ function updateMarketplaceJson() {
   const index = data.plugins.findIndex((item) => item.name === PLUGIN_NAME);
   if (index >= 0) data.plugins[index] = entry;
   else data.plugins.push(entry);
-  data.plugins = data.plugins.filter((item) => item.name !== "marketplace-products");
   fs.writeFileSync(agentsMarketplace, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
@@ -255,52 +276,60 @@ function updateCodexConfig() {
   text = upsertTomlBlock(text, `[plugins."${PLUGIN_NAME}@${MARKETPLACE_NAME}"]`, [
     "enabled = true",
   ]);
-  if (text.includes(`[plugins."marketplace-products@${MARKETPLACE_NAME}"]`)) {
-    text = upsertTomlBlock(
-      text,
-      `[plugins."marketplace-products@${MARKETPLACE_NAME}"]`,
-      ["enabled = false"],
-    );
-  }
   fs.writeFileSync(codexConfig, `${text.trimEnd()}\n`, "utf8");
 }
 
-function runLogin(pythonPath) {
+function runLogin(pythonPath, root) {
   if (skipLogin) {
     log("browser login skipped");
     return;
   }
-  log("opening Ozon and Wildberries login windows");
+  log("opening the Ozon login window \u2014 log in there yourself");
   run(pythonPath, [
-    path.join(sourceRoot, "scripts", "browser_login.py"),
-    "--source",
-    "all",
-    "--source-data",
-    path.join(sourceRoot, "data"),
-    "--cache-data",
-    path.join(cacheRoot, "data"),
+    path.join(root, "scripts", "ozon_login.py"),
+    "--data",
+    path.join(root, "data"),
     "--profile",
     browserProfile,
   ]);
+  if (fs.existsSync(sourceRoot) && fs.existsSync(cacheRoot)) {
+    syncCookieFiles(sourceRoot, cacheRoot);
+  }
 }
 
 function main() {
+  if (loginOnly) {
+    const root = fs.existsSync(path.join(sourceRoot, "scripts", "ozon_login.py"))
+      ? sourceRoot
+      : packageRoot;
+    log("starting the Ozon login flow");
+    const pythonPath = ensureVenv(root);
+    runLogin(pythonPath, root);
+    log("login cookies saved");
+    return;
+  }
+
   log(`installing ${PLUGIN_NAME}@${version}`);
   copyBundle(sourceRoot);
   copyBundle(cacheRoot);
   syncCookieFiles(sourceRoot, cacheRoot);
   const pythonPath = ensureVenv(sourceRoot);
   writeMcp(cacheRoot, pythonPath);
-  updateMarketplaceJson();
-  updateCodexConfig();
-  runLogin(pythonPath);
+  updateClaudeConfig(sourceRoot, pythonPath);
+  if (fs.existsSync(path.join(home, ".codex"))) {
+    updateMarketplaceJson();
+    updateCodexConfig();
+  } else {
+    log("Codex not found — skipping its config");
+  }
+  runLogin(pythonPath, sourceRoot);
   log(`installed as ${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
-  log("restart Codex if this chat does not show the new MCP tools yet");
+  log("restart Claude Code (or Codex) to see the ozon_* tools");
 }
 
 try {
   main();
 } catch (error) {
-  process.stderr.write(`[marketplaces] install failed: ${error.message}\n`);
+  process.stderr.write(`[ozon] install failed: ${error.message}\n`);
   process.exit(1);
 }

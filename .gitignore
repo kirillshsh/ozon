@@ -10,8 +10,6 @@ data/.venv/
 *.html
 result.png
 products.json
-wb_products.json
-wb_last_search.json
 search_result*.html
 product_*.html
 

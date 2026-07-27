@@ -1,15 +1,17 @@
 {
-  "name": "marketplaces",
+  "name": "ozon",
   "version": "0.1.0",
-  "description": "Codex MCP plugin for Ozon and Wildberries product search, cards, photos, and reviews.",
+  "description": "Ozon MCP plugin: search, catalogue, full product cards, reviews with photos, product Q&A, and read-only account data.",
   "type": "module",
   "bin": {
-    "marketplaces": "./bin/install.mjs",
-    "marketplaces-install": "./bin/install.mjs"
+    "ozon": "./bin/install.mjs",
+    "ozon-install": "./bin/install.mjs",
+    "ozon-login": "./bin/login.mjs"
   },
   "files": [
     ".codex-plugin/plugin.json",
-    "bin/install.mjs",
+    "assets/**",
+    "bin/*.mjs",
     "skills/**/SKILL.md",
     "scripts/**/*.py",
     ".mcp.json",
@@ -19,6 +21,7 @@
   "scripts": {
     "install:local": "node ./bin/install.mjs",
     "install:local:skip-login": "node ./bin/install.mjs --skip-login",
+    "login": "node ./bin/login.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "engines": {

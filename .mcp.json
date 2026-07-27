@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "marketplaces": {
+    "ozon": {
       "command": "python3",
       "args": [
-        "./scripts/marketplace_products_server.py"
+        "./scripts/ozon_server.py"
       ],
       "cwd": "."
     }

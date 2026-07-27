@@ -1,30 +1,27 @@
 {
-  "name": "marketplaces",
+  "name": "ozon",
   "version": "0.1.0",
-  "description": "Search Ozon and Wildberries, inspect product cards with photos, and fetch reviews through local MCP tools.",
+  "description": "Search Ozon, open full product cards, read reviews with photos and product Q&A, and check your own orders — read-only.",
   "author": {
-    "name": "Kirill",
-    "email": "[TODO: author@example.com]",
-    "url": "[TODO: https://github.com/author]"
+    "name": "kirillshsh",
+    "url": "https://github.com/kirillshsh"
   },
   "homepage": "https://github.com/kirillshsh/marketplaces",
   "repository": "https://github.com/kirillshsh/marketplaces",
   "license": "MIT",
   "keywords": [
     "ozon",
-    "wildberries",
-    "wb",
     "marketplace",
     "products",
-    "marketplaces",
+    "reviews",
     "mcp"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "Marketplaces",
-    "shortDescription": "Search WB/Ozon, open product cards, images, and reviews",
-    "longDescription": "Adds local MCP tools for Ozon and Wildberries: paginated product search, full product-card inspection with image preview output, and review retrieval for both marketplaces. The installer opens a controlled browser login flow for both stores, saves cookies locally, installs Python dependencies into a private venv, and registers the plugin for Codex.",
+    "displayName": "Ozon",
+    "shortDescription": "Search Ozon, full cards, reviews with photos, Q&A",
+    "longDescription": "Read-only Ozon connector. Paginated search and catalogue browsing with price/rating filters, full product cards (Ozon Card price, regular price, all specs, variants, seller rating, every photo), buyer reviews with rating and media filters plus the actual review photos as images, product questions with seller answers, and read-only access to your own orders and favourites. Login happens in a real browser window that you complete yourself; cookies stay on this machine.",
     "developerName": "Kirill",
     "category": "Productivity",
     "capabilities": [
@@ -32,14 +29,14 @@
       "Read"
     ],
     "websiteURL": "https://github.com/kirillshsh/marketplaces",
-    "privacyPolicyURL": "[TODO: https://example.com/privacy]",
-    "termsOfServiceURL": "[TODO: https://example.com/terms]",
     "defaultPrompt": [
-      "Search Ozon and Wildberries for this product and show the next page token.",
-      "Open this WB/Ozon product card and include the first product photo in the output.",
-      "Fetch reviews for this WB/Ozon product and include the first review photo if available."
+      "Найди на Ozon беспроводные наушники до 3000 ₽ и покажи цены по Ozon Карте.",
+      "Открой карточку этого товара на Ozon: характеристики, варианты и продавец.",
+      "Покажи отзывы с фото по этому товару и сами фотографии."
     ],
-    "brandColor": "#7C3AED",
+    "brandColor": "#005BFF",
+    "composerIcon": "./assets/ozon-icon.svg",
+    "logo": "./assets/ozon-logo.svg",
     "screenshots": []
   }
 }

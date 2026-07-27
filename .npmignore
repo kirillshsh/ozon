@@ -7,11 +7,9 @@ __pycache__/
 
 data/*.json
 data/.venv/
-wb_last_search.json
 *.html
 result.png
 products.json
-wb_products.json
 search_result*.html
 product_*.html
 .npm-pack/

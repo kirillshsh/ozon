@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Ozon">
+  <rect width="256" height="256" rx="56" fill="#005BFF"/>
+  <circle cx="77" cy="128" r="35" fill="none" stroke="#FFFFFF" stroke-width="22"/>
+  <path d="M128 95h78l-44 66h44" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="205" cy="78" r="14" fill="#FFFFFF"/>
+</svg>

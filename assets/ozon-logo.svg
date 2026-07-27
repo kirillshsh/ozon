@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 240" role="img" aria-label="Ozon Marketplace">
+  <rect width="720" height="240" rx="40" fill="#005BFF"/>
+  <circle cx="128" cy="120" r="48" fill="none" stroke="#FFFFFF" stroke-width="30"/>
+  <path d="M220 75h118l-72 90h76" fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="410" cy="120" r="48" fill="none" stroke="#FFFFFF" stroke-width="30"/>
+  <path d="M502 168V72l88 96V72" fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="360" y="214" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0" fill="#FFFFFF">Wildberries + Ozon product tools</text>
+</svg>
