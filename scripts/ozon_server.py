@@ -153,28 +153,48 @@ def _open_login_window() -> bool:
     return True
 
 
-async def _spawn_login() -> None:
+async def _run_login(timeout_minutes: float) -> bool:
+    """Run ozon_login.py to completion; True when it saved fresh cookies."""
+    global _login_error
     script = Path(__file__).resolve().parent / "ozon_login.py"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         str(script),
         "--timeout-minutes",
-        "15",
+        str(timeout_minutes),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
     stdout, _ = await process.communicate()
     output = (stdout or b"").decode(errors="replace")
     sys.stderr.write(output)
-    global _login_error
     # A login that died on its own says nothing on screen, so the next refused
     # request is the only place the user hears about it — carry the reason there.
     _login_error = "" if process.returncode == 0 else (output.strip().splitlines() or [""])[-1]
     SESSION.cache_clear()  # fresh cookies land on disk; drop answers from the dead session
+    return process.returncode == 0
+
+
+async def _spawn_login() -> None:
+    await _run_login(15)
+
+
+async def _silent_login() -> bool:
+    """Refresh the cookies without asking the user anything.
+
+    The window it opens closes by itself the moment the profile's own login hands
+    over new cookies — usually within seconds. Nothing to click, so keep the
+    deadline short: past it the profile really is logged out and the long-lived
+    window in _expired is what the user needs.
+    """
+    if _login_task is not None and not _login_task.done():
+        return False  # a window is already up; the profile lock is taken
+    return await _run_login(1)
 
 
 _login_task: asyncio.Task[None] | None = None
 _login_error: str = ""
+SESSION.on_expired = _silent_login
 
 
 def _mask_proxy(url: str) -> str:

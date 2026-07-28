@@ -149,6 +149,8 @@ class Session:
         self._lock = asyncio.Lock()
         self._last_request = 0.0
         self._cache: dict[str, tuple[float, Any]] = {}
+        # Set by the server to a coroutine that re-runs the browser login.
+        self.on_expired: Any = None
 
     # -- jar -----------------------------------------------------------------
     def jar(self) -> dict[str, str]:
@@ -270,6 +272,15 @@ class Session:
             self._harvest(response)
             return response
 
+    async def _relogin(self) -> bool:
+        """True only when the hook actually put fresh cookies on disk."""
+        if self.on_expired is None:
+            return False
+        before = cookies_mtime()
+        with contextlib.suppress(Exception):
+            await self.on_expired()
+        return cookies_mtime() > before
+
     async def page_json(
         self,
         path: str,
@@ -289,6 +300,7 @@ class Session:
         referer = referer or BASE + path.split("?")[0]
 
         last: Exception | None = None
+        relogged = False
         for attempt in range(RETRIES):
             try:
                 response = await self.raw_get(url, referer=referer, json_api=True)
@@ -307,7 +319,16 @@ class Session:
                 if cache:
                     self.cache_put(key, data)
                 return data
-            _raise_if_refused(response.status_code, body)
+            try:
+                _raise_if_refused(response.status_code, body)
+            except OzonChallenge:
+                # The cookies expire in about a day, long before the login in the
+                # browser profile does — so the usual cure is a silent re-login the
+                # user never sees. Only a profile that is logged out too needs them.
+                if relogged or not await self._relogin():
+                    raise
+                relogged = True
+                continue
             if response.status_code in {404, 410}:
                 raise OzonHTTPError(f"Ozon returned HTTP {response.status_code} for {path}")
             last = OzonHTTPError(f"Ozon returned HTTP {response.status_code}: {body[:200]}")
