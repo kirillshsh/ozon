@@ -2,9 +2,9 @@
 """Ozon MCP server — a shopper's view of ozon.ru, plus the cart.
 
 Data comes from Ozon's own storefront JSON API (composer-api page/json/v2),
-using the cookies of a browser session the user logged in by hand. The only tool
-that writes to the account is ozon_cart_add; nothing here places an order,
-cancels one, changes favourites or posts reviews.
+using the cookies of a browser session the user logged in by hand. The only
+tools that write to the account are the cart and favourites add/remove ones;
+nothing here places an order, cancels one, or posts reviews.
 """
 from __future__ import annotations
 
@@ -37,9 +37,10 @@ server = FastMCP(
         "favourites and cart.\n"
         "Typical flow: ozon_search -> take a product url -> ozon_product / "
         "ozon_reviews / ozon_questions on that url.\n"
-        "Everything is read-only except ozon_cart_add, which puts a product in the "
-        "user's real cart — ask them before calling it. Nothing here can place or "
-        "cancel an order; checkout stays with the user on ozon.ru.\n"
+        "Everything is read-only except ozon_cart_add / ozon_cart_remove (the user's "
+        "real cart) and ozon_favorites_add / ozon_favorites_remove (their favourites) "
+        "— ask them before calling any of these. Nothing here can place or cancel an "
+        "order; checkout stays with the user on ozon.ru.\n"
         "Prices: every `price` here is the price WITH an Ozon Card — the number Ozon "
         "headlines and the one its own price filter matches. Crossed-out and no-card "
         "prices are deliberately not reported.\n"
@@ -923,7 +924,8 @@ async def ozon_favorites(page: int = 1, limit: int = 36) -> dict[str, Any]:
 
     Returns the same tile shape as ozon_search (title, Ozon Card price,
     old price, rating, url), so a favourite can be passed straight to
-    ozon_product. Adding or removing favourites is not supported."""
+    ozon_product. ozon_favorites_add / ozon_favorites_remove change the
+    list."""
     limit = _clamp(limit, 1, 200)
     try:
         data = await SESSION.page_json(
@@ -941,6 +943,81 @@ async def ozon_favorites(page: int = 1, limit: int = 36) -> dict[str, Any]:
         "total_returned": len(tiles),
         "products": tiles,
         "empty_state": "" if tiles else parse.parse_empty_state(data),
+    }
+
+
+@server.tool()
+async def ozon_favorites_add(url: str = "", product_id: str = "") -> dict[str, Any]:
+    """Add a product to the user's Ozon favourites. This CHANGES their account.
+
+    Ask the user before calling it. It does not buy anything and touches nothing
+    but the favourites list; the user can remove the item on ozon.ru.
+
+    url / product_id: the product, same values ozon_product takes.
+
+    Ozon answers 'success' even for a SKU it then refuses to keep, so the tool
+    re-reads the favourites afterwards. `added` is the tile as it really landed
+    there — if it is null the product did not make it in and the response says
+    so."""
+    try:
+        product_url = client.normalize_product_url(url=url, product_id=product_id)
+        sku = client.product_id_from_url(product_url)
+        if not sku:
+            raise ValueError(f"No product id in {product_url} — pass a /product/<id>/ url.")
+        await SESSION.action("v2/favoriteBatchAddItems", {"skus": [int(sku)]}, referer=product_url)
+        data = await SESSION.page_json("/my/favorites", cache=False)
+    except (OzonChallenge, OzonBlocked) as exc:
+        return _expired(exc)
+    anonymous = _anonymous(data, "favourites")
+    if anonymous:
+        return anonymous
+    added = next((tile for tile in parse.parse_tiles(data) if tile["id"] == sku), None)
+    return {
+        "ok": bool(added),
+        "requested": {"url": product_url, "id": sku},
+        "added": added,
+        **(
+            {}
+            if added
+            else {
+                "error": "not_in_favorites",
+                "message": (
+                    "Ozon accepted the request but the product is not in the favourites — "
+                    "the SKU may not exist. Check ozon_product."
+                ),
+            }
+        ),
+    }
+
+
+@server.tool()
+async def ozon_favorites_remove(url: str = "", product_id: str = "") -> dict[str, Any]:
+    """Remove a product from the user's Ozon favourites. This CHANGES their account.
+
+    Ask the user before calling it. url / product_id: the product, same values
+    ozon_product takes.
+
+    The tool asks Ozon afterwards whether the SKU is still favourited, so `ok`
+    means the product is really gone — including when it was never there."""
+    try:
+        product_url = client.normalize_product_url(url=url, product_id=product_id)
+        sku = client.product_id_from_url(product_url)
+        if not sku:
+            raise ValueError(f"No product id in {product_url} — pass a /product/<id>/ url.")
+        await SESSION.action("v2/favoriteBatchDeleteItems", {"skus": [int(sku)]}, referer=product_url)
+        check = await SESSION.action("favoriteCheckItems", {"skus": [int(sku)]}, referer=product_url)
+    except (OzonChallenge, OzonBlocked) as exc:
+        return _expired(exc)
+    still_favorited = int(sku) in (check.get("skus") or [])
+    return {
+        "ok": not still_favorited,
+        "requested": {"url": product_url, "id": sku},
+        "removed": not still_favorited,
+        **(
+            {"error": "still_in_favorites", "message": "Ozon kept the product in the favourites."}
+            if still_favorited
+            else {}
+        ),
     }
 
 
@@ -1029,6 +1106,45 @@ async def ozon_cart_add(url: str = "", product_id: str = "", quantity: int = 1) 
                     "usually out of stock or the SKU does not exist. Check ozon_product."
                 ),
             }
+        ),
+    }
+
+
+@server.tool()
+async def ozon_cart_remove(url: str = "", product_id: str = "") -> dict[str, Any]:
+    """Remove a product from the user's real Ozon cart. This CHANGES their account.
+
+    Ask the user before calling it. url / product_id: the product, same values
+    ozon_product takes; for a variant line pass the SKU shown by ozon_cart.
+
+    The tool re-reads the cart afterwards and returns it, like ozon_cart_add.
+    `ok` means the SKU is really gone from the cart — including when it was
+    never there."""
+    try:
+        product_url = client.normalize_product_url(url=url, product_id=product_id)
+        sku = client.product_id_from_url(product_url)
+        if not sku:
+            raise ValueError(f"No product id in {product_url} — pass a /product/<id>/ url.")
+        await SESSION.page_action("/cart", "deleteItems", {"items": [sku]})
+        data = await SESSION.page_json("/cart", cache=False)
+    except (OzonChallenge, OzonBlocked) as exc:
+        return _expired(exc)
+    anonymous = _anonymous(data, "the cart")
+    if anonymous:
+        return anonymous
+    cart = _cart_payload(data)
+    still = next(
+        (item for section in cart["sections"] for item in section["items"] if item["id"] == sku), None
+    )
+    return {
+        **cart,
+        "ok": still is None,
+        "requested": {"url": product_url, "id": sku},
+        "removed": still is None,
+        **(
+            {"error": "still_in_cart", "message": "Ozon kept the line in the cart."}
+            if still
+            else {}
         ),
     }
 

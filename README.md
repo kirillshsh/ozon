@@ -26,13 +26,14 @@ Local MCP plugin that gives an agent a shopper's view of ozon.ru, including the 
   size chart as text (RU/international labels against chest, waist, hip and
   foot-length in cm) — or, when the seller uploaded it as a picture, the image
   URLs to look at instead of numbers to guess
-- **your own orders and favourites**, read-only
+- **your own orders and favourites**, plus `ozon_favorites_add` /
+  `ozon_favorites_remove` to edit the favourites
 - **your cart**: what is in it with quantities, per-line prices and totals, and
-  `ozon_cart_add` to put a product in it
+  `ozon_cart_add` / `ozon_cart_remove` to edit it
 
-`ozon_cart_add` is the only tool that writes to the account. There is no
-checkout, no favouriting, no review or question posting — placing an order
-stays with you on ozon.ru.
+The cart and favourites add/remove tools are the only ones that write to the
+account. There is no checkout, no review or question posting — placing an
+order stays with you on ozon.ru.
 
 ## Tools
 
@@ -46,8 +47,11 @@ stays with you on ozon.ru.
 | `ozon_questions` | product Q&A with seller answers |
 | `ozon_orders` | your orders and their statuses (read-only) |
 | `ozon_favorites` | your favourites (read-only) |
+| `ozon_favorites_add` | add a product to your favourites (**writes to your account**) |
+| `ozon_favorites_remove` | remove a product from your favourites (**writes to your account**) |
 | `ozon_cart` | what is in your cart, with totals (read-only) |
 | `ozon_cart_add` | put a product in your cart (**writes to your account**) |
+| `ozon_cart_remove` | take a product out of your cart (**writes to your account**) |
 | `ozon_status` | which account the session belongs to, and is it alive |
 | `ozon_location` | the delivery city prices refer to |
 | `ozon_refresh_cookies` | opens a browser window for you to log in |

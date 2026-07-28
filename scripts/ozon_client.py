@@ -366,6 +366,38 @@ class Session:
         except Exception as exc:
             raise OzonHTTPError(f"Ozon action {name} returned non-JSON: {body[:200]}") from exc
 
+    async def page_action(self, path: str, name: str, params: Any) -> dict[str, Any]:
+        """POST one page-level action — the postBody dispatch cart widgets use.
+
+        Unlike `action`, Ozon routes these through the page/json endpoint of the
+        page the widget lives on, with `params` as a JSON string inside the body.
+        No retries, for the same reason as `action`.
+        """
+        from curl_cffi.requests import AsyncSession
+
+        headers = self._headers(BASE + path, json_api=True)
+        headers["Content-Type"] = "application/json"
+        async with self._lock:
+            await self._throttle()
+            async with AsyncSession(impersonate=IMPERSONATE, **_proxy_kwargs()) as client:
+                response = await client.post(
+                    BASE + "/api/composer-api.bx/page/json/v2?url=" + quote(path, safe="/"),
+                    headers=headers,
+                    cookies=self.jar(),
+                    json={"name": name, "params": json.dumps(params)},
+                    timeout=40,
+                )
+            self._harvest(response)
+        body = response.text or ""
+        _raise_if_refused(response.status_code, body)
+        if response.status_code != 200:
+            raise OzonHTTPError(f"Ozon returned HTTP {response.status_code}: {body[:200]}")
+        self.cache_clear()  # the account state just changed; cached pages are stale
+        try:
+            return response.json()
+        except Exception as exc:
+            raise OzonHTTPError(f"Ozon page action {name} returned non-JSON: {body[:200]}") from exc
+
 
 SESSION = Session()
 

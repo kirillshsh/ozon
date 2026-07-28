@@ -6,8 +6,8 @@ description: Use the local Ozon MCP tools to search ozon.ru, open full product c
 # Ozon
 
 Access to ozon.ru through the logged-in browser session saved on this machine.
-Everything is read-only except `ozon_cart_add`; ordering, favourites edits and
-posting reviews or questions are not possible.
+Everything is read-only except the cart and favourites add/remove tools;
+ordering and posting reviews or questions are not possible.
 
 ## Tools
 
@@ -25,8 +25,10 @@ posting reviews or questions are not possible.
 - `ozon_review_media` — downloads review photos and returns them as images.
 - `ozon_questions` — buyer questions with the seller's answers.
 - `ozon_orders`, `ozon_favorites`, `ozon_cart` — the user's own data, read-only.
-- `ozon_cart_add` — puts a product in the user's real cart. The only tool that
-  changes anything.
+- `ozon_cart_add` / `ozon_cart_remove` — put a product in the user's real cart
+  or take it out.
+- `ozon_favorites_add` / `ozon_favorites_remove` — add a product to the user's
+  favourites or remove it. These four are the only tools that change anything.
 - `ozon_status` — which account the session belongs to and whether it is alive.
 - `ozon_refresh_cookies` — opens a browser window for the user to log in.
 
@@ -58,7 +60,8 @@ When a tool returns `error: session_expired`, tell the user to run
 `ozon_refresh_cookies` and that they will have to log in in the browser window
 themselves — do not retry the failing tool first.
 
-Ask the user before calling `ozon_cart_add` — it changes their real cart. Its
+Ask the user before calling any cart or favourites add/remove tool — they
+change the real account. `ozon_cart_add`'s
 `quantity` is absolute, not an increment, and for a product with colour/size
 variants pass the exact variant url or SKU from `ozon_product`'s `variants`.
 It never buys anything: no order is placed and no money moves, and the server
