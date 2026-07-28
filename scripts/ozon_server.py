@@ -108,6 +108,7 @@ def _expired(exc: Exception) -> dict[str, Any]:
         "error": "session_expired",
         "message": str(exc),
         "login_window_opened": opened,
+        **({"previous_login_error": _login_error} if _login_error else {}),
         "next_step": (
             "STOP all Ozon work and tell the user, in their language, that Ozon is showing a "
             "captcha / asking to log in. A browser window on ozon.ru is already open on their "
@@ -163,11 +164,17 @@ async def _spawn_login() -> None:
         stderr=asyncio.subprocess.STDOUT,
     )
     stdout, _ = await process.communicate()
-    sys.stderr.write((stdout or b"").decode(errors="replace"))
+    output = (stdout or b"").decode(errors="replace")
+    sys.stderr.write(output)
+    global _login_error
+    # A login that died on its own says nothing on screen, so the next refused
+    # request is the only place the user hears about it — carry the reason there.
+    _login_error = "" if process.returncode == 0 else (output.strip().splitlines() or [""])[-1]
     SESSION.cache_clear()  # fresh cookies land on disk; drop answers from the dead session
 
 
 _login_task: asyncio.Task[None] | None = None
+_login_error: str = ""
 
 
 def _mask_proxy(url: str) -> str:

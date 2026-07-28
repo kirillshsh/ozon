@@ -197,10 +197,17 @@ def _logged_in(cookies: list[dict[str, Any]]) -> bool:
 
 
 async def _page_usable(tab: Any) -> bool:
+    # Every read is timed out: a window the user closed leaves a CDP call that
+    # never answers, and an untimed await there hangs the whole login — silently,
+    # with the profile lock still held, so the next attempt cannot open a window
+    # either.
+    async def read(expression: str) -> str:
+        return str(await asyncio.wait_for(tab.evaluate(expression), timeout=10))
+
     try:
-        title = str(await tab.evaluate("document.title || ''"))
-        html = str(await tab.evaluate("document.documentElement.innerHTML.substring(0, 30000)"))
-        body = str(await tab.evaluate("document.body?.innerText.substring(0, 10000) || ''"))
+        title = await read("document.title || ''")
+        html = await read("document.documentElement.innerHTML.substring(0, 30000)")
+        body = await read("document.body?.innerText.substring(0, 10000) || ''")
     except Exception:
         return False
     text = f"{title}\n{html}\n{body}".lower()
@@ -260,6 +267,11 @@ async def login(
             deadline = time.time() + timeout_minutes * 60
             hinted = 0.0
             while True:
+                if browser.stopped:
+                    raise RuntimeError(
+                        "The login window closed before the Ozon cookies appeared — "
+                        "run ozon_refresh_cookies again and leave the window open."
+                    )
                 if time.time() > deadline:
                     raise TimeoutError("Ozon login timed out.")
                 cookies = _ozon_cookies(await _all_cookies(browser))
