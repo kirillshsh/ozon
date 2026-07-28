@@ -14,6 +14,8 @@ ordering and posting reviews or questions are not possible.
 - `ozon_search` — paginated search. Returns tiles with url, price, rating,
   review count and the delivery date. Filters: `sort`, `price_min`,
   `price_max`, `brand`, plus any key from the response's `available_filters`.
+- `ozon_deep_search` — the same search, but deep: walks far past the first
+  screen and/or merges 2-4 query phrasings, deduplicated by product id.
 - `ozon_catalog` — the category tree (no arguments) or the products inside one
   category, with the same filters as search.
 - `ozon_product` — one full card by url or product id: price, stock, all
@@ -36,6 +38,16 @@ ordering and posting reviews or questions are not possible.
 
 Start with `ozon_search`, then pass a returned `url` straight to
 `ozon_product` / `ozon_reviews` / `ozon_questions` — they all take the same url.
+
+For open-ended requests — «найди лучший X», «что взять для Y» — one
+`ozon_search` call sees only the top of one literal query, and that top is
+padded with sponsored tiles. Use `ozon_deep_search` there: give it 2-4
+different phrasings of the need (synonyms, a generic and a specific wording)
+and a `limit` big enough to see past the first screen; products whose
+`matched_queries` lists several phrasings are the strongest candidates. Then
+verify the shortlist with `ozon_product` / `ozon_reviews` before recommending.
+`ozon_search` stays the right tool for finding one known product or a quick
+price check.
 
 Prices: every `price` these tools return is **the price with an Ozon Card** —
 what Ozon headlines and what its own price filter matches. Crossed-out and

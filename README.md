@@ -40,6 +40,7 @@ order stays with you on ozon.ru.
 | tool | purpose |
 | --- | --- |
 | `ozon_search` | search with paging, sorting and filters |
+| `ozon_deep_search` | deep search: far past the first screen, several phrasings merged |
 | `ozon_catalog` | category tree, or products in one category |
 | `ozon_product` | one full product card |
 | `ozon_reviews` | buyer reviews, filtered by stars and media |

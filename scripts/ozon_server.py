@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,7 +36,9 @@ server = FastMCP(
         "full product cards, buyer reviews with photos, product Q&A, own orders, "
         "favourites and cart.\n"
         "Typical flow: ozon_search -> take a product url -> ozon_product / "
-        "ozon_reviews / ozon_questions on that url.\n"
+        "ozon_reviews / ozon_questions on that url. For open-ended 'find the best X' "
+        "tasks prefer ozon_deep_search — it looks far past the sponsored top of the "
+        "results and can merge several query phrasings.\n"
         "Everything is read-only except ozon_cart_add / ozon_cart_remove (the user's "
         "real cart) and ozon_favorites_add / ozon_favorites_remove (their favourites) "
         "— ask them before calling any of these. Nothing here can place or cancel an "
@@ -401,12 +403,27 @@ def _apply_local_sort(tiles: list[dict[str, Any]], sort: str) -> tuple[list[dict
     )
 
 
+def _with_page(path: str, page: int) -> str:
+    parts = urlsplit(path)
+    params = [(k, v) for k, v in parse_qsl(parts.query) if k != "page"]
+    params.append(("page", str(page)))
+    return parts.path + "?" + urlencode(params)
+
+
 async def _collect_tiles(path: str, *, want: int, max_requests: int = 6) -> tuple[list[dict], dict]:
-    """Fetch one listing page, then follow its paginator until `want` tiles."""
+    """Fetch one listing page, then follow its paginator until `want` tiles.
+
+    Ozon's search paginator dead-ends after a couple of pages (its `next` turns
+    into a category link whose own paginator is empty), while the plain
+    `page=N` form of the original path keeps working arbitrarily deep — so when
+    `next` dries up we keep going by bumping `page`, and stop when a page
+    yields nothing new.
+    """
     tiles: list[dict[str, Any]] = []
     meta: dict[str, Any] = {"requests": 0, "paths": []}
     seen: set[str] = set()
     current = path
+    start_page = int(dict(parse_qsl(urlsplit(path).query)).get("page") or 1)
     for _ in range(max_requests):
         data = await SESSION.page_json(current)
         meta["requests"] += 1
@@ -414,17 +431,22 @@ async def _collect_tiles(path: str, *, want: int, max_requests: int = 6) -> tupl
         meta.setdefault("filters", parse.parse_filters(data))
         meta.setdefault("sortings", parse.parse_sortings(data))
         meta.setdefault("subcategories", parse.parse_subcategories(data))
+        added = 0
         for tile in parse.parse_tiles(data):
             key = tile.get("id") or tile.get("url")
             if key and key not in seen:
                 seen.add(key)
                 tiles.append(tile)
+                added += 1
         if len(tiles) >= want:
             break
+        if not added:
+            break  # the listing ran dry — deeper pages just repeat themselves
         nxt = parse.parse_paginator(data).get("next")
-        if not nxt or nxt == current:
-            break
-        current = nxt
+        if nxt and nxt != current:
+            current = nxt
+        else:
+            current = _with_page(path, start_page + meta["requests"])
     return tiles[:want], meta
 
 
@@ -459,7 +481,10 @@ async def ozon_search(
       response says so in `sort_note`.
     brand: brand filter value.
     filters: any other Ozon filter, as {filter_key: value} — the keys a listing
-      supports come back in `available_filters` of this same response."""
+      supports come back in `available_filters` of this same response.
+
+    For open-ended 'find the best X' tasks use ozon_deep_search — it walks
+    deeper down the results and can try several phrasings at once."""
     if not query.strip():
         raise ValueError("query must not be empty")
     page = _clamp(page, 1, 100)
@@ -473,7 +498,9 @@ async def ozon_search(
         params["brand"] = brand.strip()
 
     try:
-        tiles, meta = await _collect_tiles(_query("/search/", params), want=limit)
+        tiles, meta = await _collect_tiles(
+            _query("/search/", params), want=limit, max_requests=max(6, min(15, -(-limit // 6)))
+        )
     except (OzonChallenge, OzonBlocked) as exc:
         return _expired(exc)
     tiles, sort_note = _apply_local_sort(tiles, local_sort) if local_sort else (tiles, "")
@@ -489,6 +516,95 @@ async def ozon_search(
         "available_sortings": meta.get("sortings", []),
         "price_note": "product.price is the Ozon Card price.",
         "requests_made": meta.get("requests", 0),
+    }
+
+
+@server.tool()
+async def ozon_deep_search(
+    queries: list[str],
+    limit: int = 100,
+    sort: str = "",
+    price_min: int = 0,
+    price_max: int = 0,
+    brand: str = "",
+    filters: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Search ozon.ru deeper than the first screen: walk far down the results
+    and/or try several query phrasings at once, merged and deduplicated.
+
+    Use it instead of ozon_search when the task is 'find the best X' rather
+    than 'open this exact product':
+    - one query + a big limit looks past the (sponsored-heavy) top of the
+      results, deep into the pages a shopper never scrolls to;
+    - 2-4 DIFFERENT phrasings (synonyms, a generic and a specific wording)
+      widen the net — Ozon matches queries literally, so each phrasing
+      surfaces a different slice of the catalogue.
+
+    Results are deduplicated by product id; `matched_queries` on every tile
+    says which phrasings found it — a product several phrasings agree on is
+    usually what the user meant, and the merged list is sorted by that first.
+    Prices, filters, sort and the tile shape work exactly like ozon_search.
+
+    It spends up to ~30 requests to Ozon per call (one per ~6-8 tiles per
+    phrasing), so it is noticeably slower than ozon_search — the response says
+    in `note` when the request budget ran out before the asked-for depth."""
+    queries = [q.strip() for q in queries if q and q.strip()]
+    if not queries:
+        raise ValueError("queries must contain at least one non-empty string")
+    queries = queries[:4]
+    limit = _clamp(limit, 1, 300)
+    want = max(12, -(-limit // len(queries)))
+    budget = 30
+    merged: dict[str, dict[str, Any]] = {}
+    per_query: list[dict[str, Any]] = []
+    requests_made = 0
+    meta: dict[str, Any] = {}
+    sort_note = ""
+    exhausted = False
+    for q in queries:
+        allowance = min(15, budget - requests_made)
+        if allowance <= 0:
+            per_query.append({"query": q, "found": 0, "skipped": "request budget exhausted"})
+            exhausted = True
+            continue
+        params, local_sort = _listing_params(sort, price_min, price_max, filters)
+        params["text"] = q
+        params["from_global"] = "true"
+        if brand.strip():
+            params["brand"] = brand.strip()
+        try:
+            tiles, meta = await _collect_tiles(
+                _query("/search/", params), want=want, max_requests=allowance
+            )
+        except (OzonChallenge, OzonBlocked) as exc:
+            return _expired(exc)
+        if local_sort:
+            tiles, sort_note = _apply_local_sort(tiles, local_sort)
+        requests_made += meta.get("requests", 0)
+        if len(tiles) < want and meta.get("requests", 0) >= allowance:
+            exhausted = True  # allowance spent, not the listing running dry
+        per_query.append({"query": q, "found": len(tiles)})
+        for tile in tiles:
+            entry = merged.setdefault(tile["id"], {**tile, "matched_queries": []})
+            entry["matched_queries"].append(q)
+    products = sorted(merged.values(), key=lambda t: -len(t["matched_queries"]))[:limit]
+    return {
+        **({"sort_note": sort_note} if sort_note else {}),
+        "ok": bool(products),
+        "queries": queries,
+        "total_returned": len(products),
+        "unique_products_found": len(merged),
+        "per_query": per_query,
+        "products": products,
+        **(
+            {"note": "The request budget ran out before the asked-for depth — results cover only part of it."}
+            if exhausted
+            else {}
+        ),
+        "available_filters": meta.get("filters", []),
+        "available_sortings": meta.get("sortings", []),
+        "price_note": "product.price is the Ozon Card price.",
+        "requests_made": requests_made,
     }
 
 
