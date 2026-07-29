@@ -344,7 +344,9 @@ async def login(
             deadline = time.time() + timeout_minutes * 60
             hinted = 0.0
             while True:
-                if browser.stopped:
+                # Not browser.stopped: nodriver reports a browser it did not
+                # spawn itself as always stopped, and we spawn it here.
+                if process.returncode is not None:
                     raise RuntimeError(
                         "The login window closed before the Ozon cookies appeared — "
                         "run ozon_refresh_cookies again and leave the window open."
