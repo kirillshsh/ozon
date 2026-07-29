@@ -14,6 +14,9 @@ import contextlib
 import json
 import os
 import shutil
+import signal
+import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -147,6 +150,91 @@ def _release_profile_lock() -> None:
         handle.close()
 
 
+async def _launch_chrome(
+    executable: str, profile: Path, *, headless: bool
+) -> tuple[asyncio.subprocess.Process, int]:
+    """Start Chrome ourselves and wait as long as it really needs.
+
+    nodriver's own launcher gives the debug port 2.75 seconds; a logged-in Ozon
+    profile of a hundred-odd megabytes opens it in four to six, so every login
+    died with "Failed to connect to browser" and fell back to an empty temporary
+    profile — a window the user never saw as their own. Launching Chrome here and
+    handing nodriver the ready port removes the deadline.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    args = [
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-dev-shm-usage",
+        "--lang=ru-RU",
+    ]
+    if headless:
+        args.append("--headless=new")
+    process = await asyncio.create_subprocess_exec(
+        executable,
+        *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 90
+    while True:
+        if process.returncode is not None:
+            raise RuntimeError(f"Chrome exited with code {process.returncode} on start")
+        try:
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.close()
+            return process, port
+        except OSError:
+            if time.monotonic() > deadline:
+                raise TimeoutError("Chrome never opened its debug port") from None
+            await asyncio.sleep(0.3)
+
+
+def _kill_profile_chrome(profile: Path) -> None:
+    """Clear whatever the previous login left holding this profile.
+
+    Chrome's helper processes outlive the launcher nodriver terminates, and they
+    keep the profile's Singleton lock alive. A new Chrome then hands its window
+    over to that dead-ish instance and exits at once, so nodriver never reaches a
+    debug port: the login dies with "Failed to connect to browser" and the user
+    sees no window at all.
+    """
+    if os.name != "posix":
+        return
+    marker = f"--user-data-dir={profile}"
+    try:
+        listing = subprocess.run(
+            ["ps", "-Ao", "pid=,command="], capture_output=True, text=True, timeout=10
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return
+    pids = [
+        int(pid)
+        for pid, _, command in (line.strip().partition(" ") for line in listing.splitlines())
+        if pid.isdigit() and marker in command and int(pid) != os.getpid()
+    ]
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        alive = []
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+                alive.append(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if not alive:
+            break
+        print(f"[browser] cleared {len(alive)} leftover Chrome process(es)", flush=True)
+        pids = alive
+        time.sleep(1.5)
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        with contextlib.suppress(OSError):
+            (profile / name).unlink()
+
+
 def _serialize(cookie: Any) -> dict[str, Any]:
     get = cookie.get if isinstance(cookie, dict) else (lambda k, d=None: getattr(cookie, k, d))
     item = {
@@ -235,29 +323,18 @@ async def login(
     profile.mkdir(parents=True, exist_ok=True)
     _acquire_profile_lock(profile)
     try:
+        _kill_profile_chrome(profile)
         paths = browser_candidates()
-        kwargs: dict[str, Any] = {
-            "headless": headless,
-            "sandbox": False,
-            "lang": "ru-RU",
-            "user_data_dir": str(profile),
-            "browser_args": [
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-dev-shm-usage",
-                "--lang=ru-RU",
-            ],
-        }
-        if paths:
-            kwargs["browser_executable_path"] = paths[0]
-            print(f"[browser] using {paths[0]}", flush=True)
+        if not paths:
+            raise RuntimeError("No Chrome/Chromium found — set OZON_BROWSER to its executable.")
+        print(f"[browser] using {paths[0]}", flush=True)
         try:
-            browser = await uc.start(**kwargs)
+            process, port = await _launch_chrome(paths[0], profile, headless=headless)
         except Exception as exc:
             temp = Path(tempfile.mkdtemp(prefix="ozon-login-"))
             print(f"[browser] profile {profile} failed ({exc}); retrying with {temp}", flush=True)
-            kwargs["user_data_dir"] = str(temp)
-            browser = await uc.start(**kwargs)
+            process, port = await _launch_chrome(paths[0], temp, headless=headless)
+        browser = await uc.start(host="127.0.0.1", port=port)
 
         try:
             tab = await browser.get(LOGIN_URL)
@@ -291,6 +368,9 @@ async def login(
         finally:
             with contextlib.suppress(Exception):
                 browser.stop()
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            _kill_profile_chrome(profile)
     finally:
         _release_profile_lock()
 
